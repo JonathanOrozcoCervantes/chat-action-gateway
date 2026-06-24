@@ -1,0 +1,25 @@
+{
+  "name": "chat-action-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "serve:firebase": "firebase emulators:start --project chat-action-gateway",
+    "deploy": "npm run build && firebase deploy --project chat-action-gateway",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting --project chat-action-gateway",
+    "deploy:functions": "firebase deploy --only functions --project chat-action-gateway"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "axios": "^1.7.9",
+    "firebase": "^11.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.3"
+  },
+  "devDependencies": {}
+}

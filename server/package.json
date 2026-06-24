@@ -1,0 +1,26 @@
+{
+  "name": "chat-action-gateway-functions",
+  "description": "Cloud Functions for Agent Action Gateway",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions --project chat-action-gateway",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions --project chat-action-gateway",
+    "logs": "firebase functions:log --project chat-action-gateway"
+  },
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.2.0"
+  },
+  "devDependencies": {
+    "firebase-functions-test": "^3.3.0"
+  }
+}
