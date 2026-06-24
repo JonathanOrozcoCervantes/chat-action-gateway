@@ -1,4 +1,5 @@
 const actionRepository = require('../repositories/actionRepository');
+const expenseService = require('./expenseService');
 const { validateExpensePayload } = require('../validators/expenseValidator');
 const AppError = require('../utils/AppError');
 const { hashValue, safeHashPrefix } = require('../utils/security');
@@ -27,27 +28,17 @@ class ActionService {
         });
       }
 
-      const result = await actionRepository.createExpenseWithIdempotency({
+      return expenseService.createExpenseForUser({
         userId: token.userId,
         tokenHash,
-        idempotencyKey: normalizedPayload.idempotencyKey,
-        idempotencyHash,
-        expense: normalizedPayload.expense
+        payload: {
+          ...normalizedPayload.expense,
+          idempotencyKey: normalizedPayload.idempotencyKey
+        },
+        metadata,
+        source: 'chat-action-gateway-api',
+        authType: 'action-token'
       });
-
-      await actionRepository.createActionLog({
-        ...logBase,
-        status: 'success',
-        userId: token.userId,
-        documentId: result.documentId
-      });
-
-      return {
-        action: 'post/expense',
-        userId: token.userId,
-        documentId: result.documentId,
-        idempotencyKey: normalizedPayload.idempotencyKey
-      };
     } catch (error) {
       await this.tryLogFailure({
         ...logBase,

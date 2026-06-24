@@ -8,6 +8,34 @@
     ],
     "rewrites": [
       {
+        "source": "/mcp",
+        "function": {
+          "functionId": "apiV2",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/mcp/**",
+        "function": {
+          "functionId": "apiV2",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/oauth/**",
+        "function": {
+          "functionId": "apiV2",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/.well-known/**",
+        "function": {
+          "functionId": "apiV2",
+          "region": "us-central1"
+        }
+      },
+      {
         "source": "/api/**",
         "function": {
           "functionId": "apiV2",
@@ -28,6 +56,8 @@
         "node_modules",
         ".git",
         "config/settingsLocal.js",
+        "config/settingsLocal*.js",
+        "**/settingsLocal*.js",
         "firebase-debug.log",
         "firebase-debug.*.log",
         "*.local"

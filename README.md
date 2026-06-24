@@ -78,6 +78,43 @@ Colecciones principales:
 - `users/{userId}/expenses/{expenseId}`
 - `users/{userId}/idempotencyKeys/{idempotencyHash}`
 - `actionLogs/{logId}`
+- `oauthClients/{clientId}`
+- `oauthAuthorizationCodes/{codeHash}`
+- `oauthAccessTokens/{accessTokenHash}`
+- `oauthRefreshTokens/{refreshTokenHash}`
+
+## MCP para ChatGPT
+
+La misma Function `apiV2` sirve tambien el servidor MCP:
+
+```txt
+https://chat-action-gateway.web.app/mcp
+```
+
+El MCP usa OAuth para que varias personas puedan usar el mismo servidor sin mezclar gastos. El usuario no escribe `userId` ni token dentro de cada tool. En el flujo de autorizacion pega su token personal una sola vez; el backend calcula `SHA-256(token)`, busca `actionTokens/{tokenHash}` y emite un access token OAuth asociado al `userId` correcto.
+
+Rutas OAuth publicadas:
+
+- Protected resource metadata: `https://chat-action-gateway.web.app/.well-known/oauth-protected-resource`
+- Authorization server metadata: `https://chat-action-gateway.web.app/.well-known/oauth-authorization-server`
+- Authorization URL: `https://chat-action-gateway.web.app/oauth/authorize`
+- Token URL: `https://chat-action-gateway.web.app/oauth/token`
+- Dynamic client registration URL: `https://chat-action-gateway.web.app/oauth/register`
+
+Configuracion manual en ChatGPT, si la deteccion automatica no llena todo:
+
+- URL del servidor: `https://chat-action-gateway.web.app/mcp`
+- Autenticacion: OAuth
+- Metodo de registro: Dynamic client registration, o cliente definido por el usuario con token endpoint auth method `none`
+- Authorization server base: `https://chat-action-gateway.web.app`
+- Resource: `https://chat-action-gateway.web.app/mcp`
+- Scopes: `expenses:write`
+
+Tools disponibles:
+
+- `create_expense`: registra un gasto para el usuario autenticado por OAuth.
+
+La tool no acepta `token` ni `userId`. Esos datos se resuelven desde `Authorization: Bearer <access_token>` en cada request MCP.
 
 ## Tokens e idempotencia
 

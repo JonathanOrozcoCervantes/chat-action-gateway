@@ -1,11 +1,18 @@
 let localSettings = null;
-let isLocal = false;
+const isCloudRuntime = Boolean(
+  process.env.K_SERVICE
+  || process.env.FUNCTION_TARGET
+  || process.env.FUNCTION_NAME
+);
 
-try {
-  localSettings = require('./settingsLocal');
-  isLocal = true;
-  console.log('Using local settings');
-} catch (e) {
+if (!isCloudRuntime) {
+  try {
+    localSettings = require('./settingsLocal');
+    console.log('Using local settings');
+  } catch (e) {
+    console.log('Using Firebase secret CONFIGS_FUNCTIONS');
+  }
+} else {
   console.log('Using Firebase secret CONFIGS_FUNCTIONS');
 }
 
@@ -25,13 +32,13 @@ const getSecretConfig = () => {
 };
 
 const getConfigValue = (key) => {
-  if (isLocal && localSettings && localSettings[key] !== undefined) {
-    return localSettings[key];
-  }
-
   const secretConfig = getSecretConfig();
   if (secretConfig[key] !== undefined) {
     return secretConfig[key];
+  }
+
+  if (!isCloudRuntime && localSettings && localSettings[key] !== undefined) {
+    return localSettings[key];
   }
 
   return undefined;

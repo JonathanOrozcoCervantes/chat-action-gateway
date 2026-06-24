@@ -1,13 +1,12 @@
 const AppError = require('../utils/AppError');
 
-const REQUIRED_FIELDS = [
+const EXPENSE_REQUIRED_FIELDS = [
   'amount',
   'merchant',
   'category',
   'date',
   'currency',
-  'idempotencyKey',
-  'token'
+  'idempotencyKey'
 ];
 
 const MAX_TEXT_LENGTH = 500;
@@ -20,8 +19,8 @@ const trimText = (value) => {
   return String(value).trim();
 };
 
-const validateRequiredFields = (payload) => {
-  const missingFields = REQUIRED_FIELDS.filter((field) => !trimText(payload[field]));
+const validateRequiredFields = (payload, requiredFields) => {
+  const missingFields = requiredFields.filter((field) => !trimText(payload[field]));
 
   if (missingFields.length) {
     throw new AppError({
@@ -49,8 +48,13 @@ const validateTextLength = (field, value, maxLength = MAX_TEXT_LENGTH) => {
   }
 };
 
-const validateExpensePayload = (payload) => {
-  validateRequiredFields(payload);
+const normalizeExpensePayload = (payload, options = {}) => {
+  const { requireToken = true } = options;
+  const requiredFields = requireToken
+    ? [...EXPENSE_REQUIRED_FIELDS, 'token']
+    : EXPENSE_REQUIRED_FIELDS;
+
+  validateRequiredFields(payload, requiredFields);
 
   const amount = Number(trimText(payload.amount));
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -93,9 +97,12 @@ const validateExpensePayload = (payload) => {
     ['description', description, 260],
     ['paymentMethod', paymentMethod, 80],
     ['notes', notes, 500],
-    ['idempotencyKey', idempotencyKey, 260],
-    ['token', token, 260]
+    ['idempotencyKey', idempotencyKey, 260]
   ].forEach(([field, value, maxLength]) => validateTextLength(field, value, maxLength));
+
+  if (requireToken) {
+    validateTextLength('token', token, 260);
+  }
 
   const expense = {
     amount,
@@ -119,6 +126,15 @@ const validateExpensePayload = (payload) => {
   };
 };
 
+const validateExpensePayload = (payload) => normalizeExpensePayload(payload, {
+  requireToken: true
+});
+
+const validateExpenseForUserPayload = (payload) => normalizeExpensePayload(payload, {
+  requireToken: false
+});
+
 module.exports = {
-  validateExpensePayload
+  validateExpensePayload,
+  validateExpenseForUserPayload
 };

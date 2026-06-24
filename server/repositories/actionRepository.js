@@ -22,7 +22,15 @@ class ActionRepository {
     };
   }
 
-  async createExpenseWithIdempotency({ userId, tokenHash, idempotencyKey, idempotencyHash, expense }) {
+  async createExpenseWithIdempotency({
+    userId,
+    tokenHash,
+    idempotencyKey,
+    idempotencyHash,
+    expense,
+    source = 'chat-action-gateway',
+    authType = 'action-token'
+  }) {
     const userRef = db.collection('users').doc(userId);
     const idempotencyRef = userRef.collection('idempotencyKeys').doc(idempotencyHash);
     const expenseRef = userRef.collection('expenses').doc();
@@ -43,12 +51,14 @@ class ActionRepository {
       }
 
       const now = admin.firestore.FieldValue.serverTimestamp();
+      const tokenFields = tokenHash ? { tokenHash } : {};
       const expenseDocument = {
         ...expense,
-        tokenHash,
+        ...tokenFields,
         idempotencyKey,
         idempotencyHash,
-        source: 'chat-action-gateway',
+        source,
+        authType,
         createdAt: now,
         updatedAt: now
       };
@@ -58,7 +68,9 @@ class ActionRepository {
         action: 'post/expense',
         documentId: expenseRef.id,
         idempotencyKey,
-        tokenHash,
+        ...tokenFields,
+        source,
+        authType,
         createdAt: now
       });
 
