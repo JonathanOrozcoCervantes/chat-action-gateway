@@ -2,34 +2,13 @@ const { db, admin } = require('../firebaseAdmin');
 const AppError = require('../utils/AppError');
 
 class ActionRepository {
-  async getActiveToken(tokenHash) {
-    const tokenRef = db.collection('actionTokens').doc(tokenHash);
-    const tokenSnapshot = await tokenRef.get();
-
-    if (!tokenSnapshot.exists) {
-      return null;
-    }
-
-    const token = tokenSnapshot.data();
-
-    if (!token.active || !token.userId) {
-      return null;
-    }
-
-    return {
-      id: tokenSnapshot.id,
-      ...token
-    };
-  }
-
   async createExpenseWithIdempotency({
     userId,
-    tokenHash,
     idempotencyKey,
     idempotencyHash,
     expense,
-    source = 'chat-action-gateway',
-    authType = 'action-token'
+    source = 'chat-action-gateway-mcp',
+    authType = 'firebase-google'
   }) {
     const userRef = db.collection('users').doc(userId);
     const idempotencyRef = userRef.collection('idempotencyKeys').doc(idempotencyHash);
@@ -51,10 +30,8 @@ class ActionRepository {
       }
 
       const now = admin.firestore.FieldValue.serverTimestamp();
-      const tokenFields = tokenHash ? { tokenHash } : {};
       const expenseDocument = {
         ...expense,
-        ...tokenFields,
         idempotencyKey,
         idempotencyHash,
         source,
@@ -68,7 +45,6 @@ class ActionRepository {
         action: 'post/expense',
         documentId: expenseRef.id,
         idempotencyKey,
-        ...tokenFields,
         source,
         authType,
         createdAt: now

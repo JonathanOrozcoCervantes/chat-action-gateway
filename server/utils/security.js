@@ -5,8 +5,6 @@ const hashValue = (value) => crypto
   .update(String(value))
   .digest('hex');
 
-const safeHashPrefix = (hash) => hash.slice(0, 12);
-
 const randomToken = (bytes = 32) => crypto
   .randomBytes(bytes)
   .toString('base64url');
@@ -18,7 +16,6 @@ const createPkceChallenge = (verifier) => crypto
 
 module.exports = {
   hashValue,
-  safeHashPrefix,
   randomToken,
   createPkceChallenge
 };

@@ -1,16 +1,15 @@
 const actionRepository = require('../repositories/actionRepository');
 const { validateExpenseForUserPayload } = require('../validators/expenseValidator');
 const AppError = require('../utils/AppError');
-const { hashValue, safeHashPrefix } = require('../utils/security');
+const { hashValue } = require('../utils/security');
 
 class ExpenseService {
   async createExpenseForUser({
     userId,
-    tokenHash,
     payload,
     metadata = {},
-    source = 'chat-action-gateway',
-    authType = 'action-token'
+    source = 'chat-action-gateway-mcp',
+    authType = 'firebase-google'
   }) {
     if (!userId) {
       throw new AppError({
@@ -25,7 +24,6 @@ class ExpenseService {
     const logBase = {
       action: 'post/expense',
       idempotencyHash,
-      tokenHashPrefix: tokenHash ? safeHashPrefix(tokenHash) : '',
       request: normalizedPayload.safeLogPayload,
       metadata: {
         ...metadata,
@@ -37,7 +35,6 @@ class ExpenseService {
     try {
       const result = await actionRepository.createExpenseWithIdempotency({
         userId,
-        tokenHash,
         idempotencyKey: normalizedPayload.idempotencyKey,
         idempotencyHash,
         expense: normalizedPayload.expense,

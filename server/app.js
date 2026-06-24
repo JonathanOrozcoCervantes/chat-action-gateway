@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const actionRoutes = require('./routes/actionRoutes');
+const apiRoutes = require('./routes/apiRoutes');
 const oauthRoutes = require('./oauth/oauthRoutes');
 const oauthController = require('./oauth/oauthController');
 const { handleMcpRequest } = require('./mcp/mcpHandler');
@@ -25,8 +25,7 @@ app.use('/oauth', oauthRoutes);
 app.all('/mcp', handleMcpRequest);
 app.all('/mcp/*', handleMcpRequest);
 
-app.use('/action', actionRoutes);
-app.use('/api/action', actionRoutes);
+app.use('/api', apiRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

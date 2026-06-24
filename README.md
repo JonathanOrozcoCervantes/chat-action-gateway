@@ -1,20 +1,15 @@
 # Chat Action Gateway
 
-Gateway web para que ChatGPT u otros agentes generen enlaces accionables.
-
-El MVP registra gastos personales desde URLs como:
-
-```txt
-https://chat-action-gateway.web.app/action/post/expense?amount=183.50&merchant=Oxxo&category=comida&date=2026-06-23&currency=MXN&idempotencyKey=demo-123&token=TOKEN
-```
+Gateway web para que ChatGPT use un servidor MCP y registre acciones en Firestore para el usuario autenticado.
 
 ## Stack
 
-- React + Vite para la pagina de resultado.
+- React + Vite para la pagina publica de estado.
 - Firebase Hosting para servir el frontend.
 - Firebase Functions 2nd gen (`apiV2`) con Express.
-- Firestore para tokens, gastos, idempotencia y logs.
-- Firebase App Check en el cliente y validacion server-side en la Function.
+- Firestore para usuarios, gastos, idempotencia, logs y codigos OAuth temporales.
+- Firebase Authentication con Google para identificar al usuario.
+- Firebase App Check en la API HTTP normal consumida por el frontend.
 
 ## Desarrollo local
 
@@ -52,8 +47,8 @@ El frontend lee:
 
 El backend usa `server/config/settings.js`, con el mismo patron de AiAssistant:
 
-- primero intenta `server/config/settingsLocal.js`;
-- si no existe, lee el secret JSON `CONFIGS_FUNCTIONS`;
+- en cloud lee el secret JSON `CONFIGS_FUNCTIONS`;
+- en local intenta `server/config/settingsLocal.js`;
 - si no hay valor, la variable queda sin definir.
 
 Formato esperado del secret:
@@ -63,35 +58,43 @@ Formato esperado del secret:
   "config": {
     "FIREBASE_PROJECT_ID": "chat-action-gateway",
     "FUNCTION_REGION": "us-central1",
-    "APP_CHECK_ENFORCEMENT": true
+    "APP_CHECK_ENFORCEMENT": true,
+    "OAUTH_ACCESS_TOKEN_SECRET": "un-secreto-largo-aleatorio"
   }
 }
 ```
 
-## Firestore
+`OAUTH_ACCESS_TOKEN_SECRET` firma los access tokens JWT que usa el MCP. Cambiarlo invalida los access tokens emitidos antes.
 
-Las reglas se administran desde la consola de Firebase. La Function escribe con Admin SDK.
+La pantalla de login OAuth vive en el frontend React, en `src/pages/OAuthLogin.jsx`, y usa la config publica de `src/firebase.js`.
 
-Colecciones principales:
+## API HTTP Normal
 
-- `actionTokens/{tokenHash}`
-- `users/{userId}/expenses/{expenseId}`
-- `users/{userId}/idempotencyKeys/{idempotencyHash}`
-- `actionLogs/{logId}`
-- `oauthClients/{clientId}`
-- `oauthAuthorizationCodes/{codeHash}`
-- `oauthAccessTokens/{accessTokenHash}`
-- `oauthRefreshTokens/{refreshTokenHash}`
+La API normal vive bajo `/api` y pasa por App Check:
+
+```txt
+GET https://chat-action-gateway.web.app/api/ping
+```
+
+Este endpoint existe como referencia de arquitectura:
+
+- `server/routes/apiRoutes.js`
+- `server/controllers/apiController.js`
+- `server/useCases/apiUseCase.js`
+- `server/services/apiService.js`
+- `server/repositories/apiRepository.js`
+
+El endpoint viejo `/action/...` con `token` por URL ya no existe.
 
 ## MCP para ChatGPT
 
-La misma Function `apiV2` sirve tambien el servidor MCP:
+La misma Function `apiV2` sirve el servidor MCP:
 
 ```txt
 https://chat-action-gateway.web.app/mcp
 ```
 
-El MCP usa OAuth para que varias personas puedan usar el mismo servidor sin mezclar gastos. El usuario no escribe `userId` ni token dentro de cada tool. En el flujo de autorizacion pega su token personal una sola vez; el backend calcula `SHA-256(token)`, busca `actionTokens/{tokenHash}` y emite un access token OAuth asociado al `userId` correcto.
+El MCP usa OAuth con Google Sign-In. Cuando ChatGPT necesita autorizar el conector, abre `/oauth/authorize`; la Function redirige al frontend `/oauth-login`, ahi el usuario inicia sesion con Google. El backend verifica el ID token de Firebase Auth, crea o actualiza `users/{firebaseUid}` y emite el authorization code para ChatGPT.
 
 Rutas OAuth publicadas:
 
@@ -105,8 +108,13 @@ Configuracion manual en ChatGPT, si la deteccion automatica no llena todo:
 
 - URL del servidor: `https://chat-action-gateway.web.app/mcp`
 - Autenticacion: OAuth
-- Metodo de registro: Dynamic client registration, o cliente definido por el usuario con token endpoint auth method `none`
+- Metodo de registro: Dynamic client registration, o cliente definido por el usuario
+- Client ID manual: `chat-action-gateway-chatgpt`
+- Token endpoint auth method: `none`
 - Authorization server base: `https://chat-action-gateway.web.app`
+- Authorization URL: `https://chat-action-gateway.web.app/oauth/authorize`
+- Token URL: `https://chat-action-gateway.web.app/oauth/token`
+- Registration URL: `https://chat-action-gateway.web.app/oauth/register`
 - Resource: `https://chat-action-gateway.web.app/mcp`
 - Scopes: `expenses:write`
 
@@ -116,33 +124,31 @@ Tools disponibles:
 
 La tool no acepta `token` ni `userId`. Esos datos se resuelven desde `Authorization: Bearer <access_token>` en cada request MCP.
 
-## Tokens e idempotencia
+## Firestore
 
-El agente debe enviar el token real en la URL:
+Las reglas se administran desde la consola de Firebase. La Function escribe con Admin SDK.
+
+Colecciones actuales:
+
+- `users/{firebaseUid}`
+- `users/{firebaseUid}/expenses/{expenseId}`
+- `users/{firebaseUid}/idempotencyKeys/{idempotencyHash}`
+- `actionLogs/{logId}`
+- `oauthAuthorizationCodes/{codeHash}`
+
+Colecciones antiguas que ya no usa el codigo:
+
+- `actionTokens`
+- `oauthClients`
+- `oauthAccessTokens`
+- `oauthRefreshTokens`
+
+Despues de desplegar y probar el login nuevo, esas colecciones antiguas se pueden borrar desde la consola si ya no necesitas historial.
+
+## Idempotencia
+
+Cada gasto requiere un `idempotencyKey`. La Function lo normaliza a `idempotencyHash` para usarlo como ID seguro en:
 
 ```txt
-token=TOKEN_REAL
+users/{firebaseUid}/idempotencyKeys/{idempotencyHash}
 ```
-
-No debe enviar el hash. La Function calcula internamente:
-
-```txt
-tokenHash = SHA-256(TOKEN_REAL)
-```
-
-Y busca el documento en firestore:
-
-```txt
-actionTokens/{tokenHash}
-```
-
-Por eso Firestore no guarda el token real; solo guarda su hash SHA-256 como ID del documento.
-
-Para crear un token nuevo:
-
-1. Genera un token largo y aleatorio.
-2. Calcula `SHA-256(token)`.
-3. Crea en firestore el documento dentro de su coleccion `actionTokens/{tokenHash}` con los campos `active: true` y el campo `userId` con el valor que quieras.
-4. Usa el token real en los enlaces generados por el agente.
-
-El `idempotencyKey` tambien se envia en claro en la URL. La Function lo normaliza a `idempotencyHash` para usarlo como ID seguro en Firestore.

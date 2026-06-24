@@ -15,15 +15,7 @@ const getPublicBaseUrl = (req) => {
 
 const getMcpResourceUrl = (req) => `${getPublicBaseUrl(req)}/mcp`;
 
-const escapeHtml = (value) => String(value || '')
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;');
-
 module.exports = {
   getPublicBaseUrl,
-  getMcpResourceUrl,
-  escapeHtml
+  getMcpResourceUrl
 };

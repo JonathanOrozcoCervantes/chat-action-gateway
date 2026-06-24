@@ -132,6 +132,60 @@ dd {
   animation: spin 1s linear infinite;
 }
 
+.oauth-panel {
+  max-width: 460px;
+}
+
+.oauth-form {
+  display: grid;
+}
+
+.oauth-button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #cbd3df;
+  border-radius: 6px;
+  color: #111827;
+  cursor: pointer;
+  display: flex;
+  font-weight: 700;
+  gap: 12px;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 16px;
+}
+
+.oauth-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.google-letter {
+  align-items: center;
+  border: 1px solid #d8dde6;
+  border-radius: 999px;
+  color: #2563eb;
+  display: flex;
+  font-weight: 800;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.inline-error {
+  background: #fff1ed;
+  border: 1px solid #f2c9bf;
+  border-radius: 6px;
+  color: #9f321f;
+  line-height: 1.45;
+  padding: 12px;
+}
+
+.oauth-status {
+  color: #637083;
+  font-size: 0.88rem;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

@@ -1,10 +1,10 @@
 const express = require('express');
-const actionController = require('../controllers/actionController');
+const apiController = require('../controllers/apiController');
 const appCheckVerification = require('../middleware/appCheck');
 
 const router = express.Router();
 
 router.use(appCheckVerification);
-router.post('/:method/:type', actionController.executeAction);
+router.get('/ping', apiController.getPing);
 
 module.exports = router;

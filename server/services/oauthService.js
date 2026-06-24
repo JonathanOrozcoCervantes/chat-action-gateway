@@ -1,14 +1,13 @@
-const actionRepository = require('../repositories/actionRepository');
+const { admin } = require('../firebaseAdmin');
 const oauthRepository = require('../repositories/oauthRepository');
+const userRepository = require('../repositories/userRepository');
+const { OAUTH_ACCESS_TOKEN_SECRET } = require('../config/settings');
 const AppError = require('../utils/AppError');
-const {
-  createPkceChallenge,
-  hashValue,
-  randomToken,
-  safeHashPrefix
-} = require('../utils/security');
+const { createPkceChallenge, hashValue, randomToken } = require('../utils/security');
+const { signJwt, verifyJwt } = require('../utils/jwt');
 
 const DEFAULT_SCOPE = 'expenses:write';
+const STATIC_CLIENT_ID = 'chat-action-gateway-chatgpt';
 const AUTH_CODE_TTL_SECONDS = 10 * 60;
 const ACCESS_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -55,6 +54,18 @@ const createOAuthError = ({ statusCode = 400, code = 'invalid_request', message 
   message
 });
 
+const getAccessTokenSecret = () => {
+  if (!OAUTH_ACCESS_TOKEN_SECRET) {
+    throw createOAuthError({
+      statusCode: 500,
+      code: 'missing_oauth_secret',
+      message: 'OAUTH_ACCESS_TOKEN_SECRET is required to issue or verify OAuth access tokens.'
+    });
+  }
+
+  return OAUTH_ACCESS_TOKEN_SECRET;
+};
+
 const isAllowedRedirectUri = (redirectUri) => {
   try {
     const url = new URL(redirectUri);
@@ -92,6 +103,11 @@ const validatePkce = (authCode, codeVerifier) => {
   }
 };
 
+const getGoogleProviderUid = (decodedToken) => {
+  const googleIdentities = decodedToken.firebase?.identities?.['google.com'];
+  return Array.isArray(googleIdentities) ? googleIdentities[0] : undefined;
+};
+
 class OAuthService {
   async registerClient(payload) {
     const redirectUris = Array.isArray(payload.redirect_uris)
@@ -105,30 +121,22 @@ class OAuthService {
       });
     }
 
-    const clientId = `chatgpt_${randomToken(24)}`;
     const scope = normalizeScope(payload.scope || DEFAULT_SCOPE);
 
-    await oauthRepository.createClient({
-      clientId,
-      clientName: trimText(payload.client_name || 'ChatGPT Connector'),
-      redirectUris,
-      scope
-    });
-
     return {
-      client_id: clientId,
+      client_id: `chatgpt_${randomToken(18)}`,
       client_id_issued_at: Math.floor(Date.now() / 1000),
       redirect_uris: redirectUris,
-      grant_types: ['authorization_code', 'refresh_token'],
+      grant_types: ['authorization_code'],
       response_types: ['code'],
       scope,
       token_endpoint_auth_method: 'none'
     };
   }
 
-  async createAuthorizationCode({ payload, personalToken, expectedResource }) {
+  async createAuthorizationCode({ payload, firebaseIdToken, expectedResource }) {
     const responseType = trimText(payload.response_type);
-    const clientId = trimText(payload.client_id);
+    const clientId = trimText(payload.client_id || STATIC_CLIENT_ID);
     const redirectUri = trimText(payload.redirect_uri);
     const codeChallenge = trimText(payload.code_challenge);
     const codeChallengeMethod = trimText(payload.code_challenge_method || 'S256');
@@ -170,32 +178,41 @@ class OAuthService {
       });
     }
 
-    const registeredClient = await oauthRepository.getClient(clientId);
-
-    if (registeredClient && !registeredClient.redirectUris.includes(redirectUri)) {
-      throw createOAuthError({
-        code: 'invalid_redirect_uri',
-        message: 'Redirect URI is not registered for this client.'
-      });
-    }
-
-    const actionTokenHash = hashValue(personalToken);
-    const actionToken = await actionRepository.getActiveToken(actionTokenHash);
-
-    if (!actionToken) {
+    if (!firebaseIdToken) {
       throw createOAuthError({
         statusCode: 401,
-        code: 'invalid_token',
-        message: 'Invalid or inactive personal token.'
+        code: 'missing_google_auth',
+        message: 'Google authentication is required.'
       });
     }
+
+    let decodedToken;
+
+    try {
+      decodedToken = await admin.auth().verifyIdToken(firebaseIdToken);
+    } catch (error) {
+      throw createOAuthError({
+        statusCode: 401,
+        code: 'invalid_google_auth',
+        message: 'Invalid or expired Google authentication.'
+      });
+    }
+
+    await userRepository.upsertGoogleUser({
+      uid: decodedToken.uid,
+      email: decodedToken.email,
+      displayName: decodedToken.name,
+      photoURL: decodedToken.picture,
+      emailVerified: decodedToken.email_verified,
+      provider: decodedToken.firebase?.sign_in_provider || 'google.com',
+      providerUid: getGoogleProviderUid(decodedToken)
+    });
 
     const code = randomToken(32);
 
     await oauthRepository.createAuthorizationCode({
       codeHash: hashValue(code),
-      userId: actionToken.userId,
-      actionTokenHash,
+      userId: decodedToken.uid,
       clientId,
       redirectUri,
       scope,
@@ -219,19 +236,15 @@ class OAuthService {
       return this.exchangeAuthorizationCode(payload);
     }
 
-    if (grantType === 'refresh_token') {
-      return this.exchangeRefreshToken(payload);
-    }
-
     throw createOAuthError({
       code: 'unsupported_grant_type',
-      message: 'Unsupported OAuth grant type.'
+      message: 'Only authorization_code grant type is supported.'
     });
   }
 
   async exchangeAuthorizationCode(payload) {
     const code = trimText(payload.code);
-    const clientId = trimText(payload.client_id);
+    const clientId = trimText(payload.client_id || STATIC_CLIENT_ID);
     const redirectUri = trimText(payload.redirect_uri);
     const resource = trimText(payload.resource);
     const codeVerifier = trimText(payload.code_verifier);
@@ -278,106 +291,36 @@ class OAuthService {
 
     return this.issueTokens({
       userId: authCode.userId,
-      actionTokenHash: authCode.actionTokenHash,
       clientId: authCode.clientId,
       scope: authCode.scope,
-      resource: authCode.resource,
-      includeRefreshToken: true
+      resource: authCode.resource
     });
   }
 
-  async exchangeRefreshToken(payload) {
-    const refreshToken = trimText(payload.refresh_token);
-    const clientId = trimText(payload.client_id);
-    const resource = trimText(payload.resource);
-
-    if (!refreshToken) {
-      throw createOAuthError({
-        code: 'invalid_request',
-        message: 'Missing refresh_token.'
-      });
-    }
-
-    const storedToken = await oauthRepository.getRefreshToken(hashValue(refreshToken));
-
-    if (!storedToken || !storedToken.active) {
-      throw createOAuthError({
-        code: 'invalid_grant',
-        message: 'Invalid refresh token.'
-      });
-    }
-
-    if (clientId && storedToken.clientId !== clientId) {
-      throw createOAuthError({
-        code: 'invalid_client',
-        message: 'Refresh token was not issued to this client.'
-      });
-    }
-
-    if (resource && storedToken.resource !== resource) {
-      throw createOAuthError({
-        code: 'invalid_target',
-        message: 'Resource does not match the refresh token.'
-      });
-    }
-
-    return this.issueTokens({
-      userId: storedToken.userId,
-      actionTokenHash: storedToken.actionTokenHash,
-      clientId: storedToken.clientId,
-      scope: storedToken.scope,
-      resource: storedToken.resource,
-      includeRefreshToken: false
-    });
-  }
-
-  async issueTokens({
+  issueTokens({
     userId,
-    actionTokenHash,
     clientId,
     scope,
-    resource,
-    includeRefreshToken
+    resource
   }) {
-    const accessToken = randomToken(40);
-    const expiresAt = addSeconds(ACCESS_TOKEN_TTL_SECONDS);
+    const normalizedScope = normalizeScope(scope);
+    const accessToken = signJwt({
+      sub: userId,
+      client_id: clientId,
+      scope: normalizedScope,
+      aud: resource,
+      resource
+    }, getAccessTokenSecret(), ACCESS_TOKEN_TTL_SECONDS);
 
-    await oauthRepository.createAccessToken({
-      accessTokenHash: hashValue(accessToken),
-      userId,
-      actionTokenHash,
-      clientId,
-      scope,
-      resource,
-      expiresAt
-    });
-
-    const tokenResponse = {
+    return {
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: ACCESS_TOKEN_TTL_SECONDS,
-      scope: normalizeScope(scope)
+      scope: normalizedScope
     };
-
-    if (includeRefreshToken) {
-      const refreshToken = randomToken(40);
-
-      await oauthRepository.createRefreshToken({
-        refreshTokenHash: hashValue(refreshToken),
-        userId,
-        actionTokenHash,
-        clientId,
-        scope,
-        resource
-      });
-
-      tokenResponse.refresh_token = refreshToken;
-    }
-
-    return tokenResponse;
   }
 
-  async verifyAccessToken(rawAccessToken, { requiredScope, resource }) {
+  verifyAccessToken(rawAccessToken, { requiredScope, resource }) {
     const accessToken = trimText(rawAccessToken);
 
     if (!accessToken) {
@@ -388,9 +331,11 @@ class OAuthService {
       });
     }
 
-    const storedToken = await oauthRepository.getAccessToken(hashValue(accessToken));
+    let tokenPayload;
 
-    if (!storedToken || !storedToken.active || isExpired(storedToken.expiresAt)) {
+    try {
+      tokenPayload = verifyJwt(accessToken, getAccessTokenSecret());
+    } catch (error) {
       throw createOAuthError({
         statusCode: 401,
         code: 'invalid_token',
@@ -398,7 +343,7 @@ class OAuthService {
       });
     }
 
-    if (resource && storedToken.resource !== resource) {
+    if (resource && tokenPayload.resource !== resource && tokenPayload.aud !== resource) {
       throw createOAuthError({
         statusCode: 401,
         code: 'invalid_token',
@@ -406,7 +351,7 @@ class OAuthService {
       });
     }
 
-    if (!hasScope(storedToken.scope, requiredScope)) {
+    if (!hasScope(tokenPayload.scope, requiredScope)) {
       throw createOAuthError({
         statusCode: 403,
         code: 'insufficient_scope',
@@ -415,12 +360,10 @@ class OAuthService {
     }
 
     return {
-      userId: storedToken.userId,
-      actionTokenHash: storedToken.actionTokenHash,
-      actionTokenHashPrefix: safeHashPrefix(storedToken.actionTokenHash),
-      clientId: storedToken.clientId,
-      scope: normalizeScope(storedToken.scope),
-      resource: storedToken.resource
+      userId: tokenPayload.sub,
+      clientId: tokenPayload.client_id,
+      scope: normalizeScope(tokenPayload.scope),
+      resource: tokenPayload.resource || tokenPayload.aud
     };
   }
 }

@@ -60,7 +60,6 @@ const createMcpServer = ({ authContext }) => {
       try {
         const result = await expenseService.createExpenseForUser({
           userId: authContext.userId,
-          tokenHash: authContext.actionTokenHash,
           payload: {
             amount: args.amount,
             merchant: args.merchant,
@@ -78,7 +77,7 @@ const createMcpServer = ({ authContext }) => {
             resource: authContext.resource
           },
           source: 'chat-action-gateway-mcp',
-          authType: 'oauth-bearer'
+          authType: 'firebase-google-oauth'
         });
 
         logInfo('mcp.tool.create_expense.success', {
