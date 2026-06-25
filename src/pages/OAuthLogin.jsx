@@ -69,8 +69,9 @@ const OAuthLogin = () => {
   const formRef = useRef(null);
   const tokenInputRef = useRef(null);
   const submittedRef = useRef(false);
+  const initialError = useMemo(() => getErrorMessage(), []);
   const [status, setStatus] = useState('');
-  const [error, setError] = useState(getErrorMessage);
+  const [error, setError] = useState(initialError);
   const [isBusy, setIsBusy] = useState(false);
 
   const authorizeParams = useMemo(() => {
@@ -100,6 +101,13 @@ const OAuthLogin = () => {
 
   useEffect(() => {
     let isMounted = true;
+
+    if (initialError) {
+      sessionStorage.removeItem(OAUTH_PENDING_KEY);
+      return () => {
+        isMounted = false;
+      };
+    }
 
     getRedirectResult(auth)
       .then(async (result) => {
@@ -134,7 +142,7 @@ const OAuthLogin = () => {
       isMounted = false;
       unsubscribe();
     };
-  }, [auth, authorizeParams, submitWithUser]);
+  }, [auth, authorizeParams, initialError, submitWithUser]);
 
   const handleGoogleLogin = async () => {
     if (!hasUsableParams(authorizeParams)) {
@@ -146,6 +154,7 @@ const OAuthLogin = () => {
       setIsBusy(true);
       setError('');
       setStatus('Abriendo Google...');
+      sessionStorage.setItem(OAUTH_PENDING_KEY, '1');
 
       if (auth.currentUser) {
         await submitWithUser(auth.currentUser);
@@ -168,7 +177,6 @@ const OAuthLogin = () => {
         }
       }
 
-      sessionStorage.setItem(OAUTH_PENDING_KEY, '1');
       await signInWithRedirect(auth, provider);
     } catch (loginError) {
       submittedRef.current = false;

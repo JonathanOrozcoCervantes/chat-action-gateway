@@ -96,6 +96,14 @@ https://chat-action-gateway.web.app/mcp
 
 El MCP usa OAuth con Google Sign-In. Cuando ChatGPT necesita autorizar el conector, abre `/oauth/authorize`; la Function redirige al frontend `/oauth-login`, ahi el usuario inicia sesion con Google. El backend verifica el ID token de Firebase Auth, crea o actualiza `users/{firebaseUid}` y emite el authorization code para ChatGPT.
 
+Los permisos OAuth se controlan por usuario en Firestore con el campo array `grantedScopes` dentro de `users/{firebaseUid}`. Al crear un usuario nuevo, o cuando el campo aun no existe, se inicializa con:
+
+```json
+["expenses:write"]
+```
+
+Si ChatGPT solicita mas scopes al registrar o autorizar el MCP, el backend solo concede la interseccion entre lo solicitado y `grantedScopes`. Cada request MCP tambien vuelve a revisar el array actual del usuario, asi que quitar un scope en Firestore bloquea el siguiente uso aunque exista un access token emitido antes. Para bloquear el acceso MCP de un usuario puedes dejar `grantedScopes` como un array vacio.
+
 Rutas OAuth publicadas:
 
 - Protected resource metadata: `https://chat-action-gateway.web.app/.well-known/oauth-protected-resource`

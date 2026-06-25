@@ -17,9 +17,10 @@ El flujo principal ya no usa enlaces `/action/...` con `token` por URL. El model
 5. Firebase Authentication entrega un ID token.
 6. La Function verifica el ID token con Admin SDK.
 7. Se crea o actualiza `users/{firebaseUid}`.
-8. ChatGPT recibe un access token OAuth.
-9. Cada tool MCP usa `Authorization: Bearer <access_token>`.
-10. El backend resuelve el usuario desde el access token y escribe en `users/{firebaseUid}`.
+8. El backend valida que el usuario tenga en `grantedScopes` los permisos solicitados.
+9. ChatGPT recibe un access token OAuth con los scopes concedidos.
+10. Cada tool MCP usa `Authorization: Bearer <access_token>`.
+11. El backend resuelve el usuario desde el access token y escribe en `users/{firebaseUid}`.
 
 Este modelo permite que muchas personas usen el mismo MCP sin mezclar registros.
 
@@ -83,6 +84,14 @@ oauthAuthorizationCodes/{codeHash}
 ```
 
 `users/{firebaseUid}` usa el UID real de Firebase Authentication como ID del documento.
+
+Cada usuario tiene un campo array `grantedScopes`. Si el campo no existe al hacer login, se inicializa con:
+
+```txt
+expenses:write
+```
+
+El access token OAuth solo incluye scopes que hayan sido solicitados por ChatGPT y que tambien existan en `users/{firebaseUid}.grantedScopes`. Cada request MCP vuelve a validar el scope requerido contra el array actual del usuario.
 
 ## Idempotencia
 

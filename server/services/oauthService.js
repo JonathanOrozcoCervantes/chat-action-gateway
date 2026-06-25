@@ -7,6 +7,7 @@ const { createPkceChallenge, hashValue, randomToken } = require('../utils/securi
 const { signJwt, verifyJwt } = require('../utils/jwt');
 
 const DEFAULT_SCOPE = 'expenses:write';
+const DEFAULT_GRANTED_SCOPES = [DEFAULT_SCOPE];
 const STATIC_CLIENT_ID = 'chat-action-gateway-chatgpt';
 const AUTH_CODE_TTL_SECONDS = 10 * 60;
 const ACCESS_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -32,12 +33,60 @@ const isExpired = (value) => {
   return !date || date.getTime() <= Date.now();
 };
 
-const normalizeScope = (scope) => {
-  const scopes = trimText(scope || DEFAULT_SCOPE)
+const parseScopes = (scope, defaultScopes = []) => {
+  const scopes = trimText(scope)
     .split(/[\s,]+/)
     .filter(Boolean);
 
-  return Array.from(new Set(scopes.length ? scopes : [DEFAULT_SCOPE])).join(' ');
+  return Array.from(new Set(scopes.length ? scopes : defaultScopes));
+};
+
+const normalizeScope = (scope) => parseScopes(scope, DEFAULT_GRANTED_SCOPES).join(' ');
+
+const createOAuthError = ({ statusCode = 400, code = 'invalid_request', message }) => new AppError({
+  statusCode,
+  code,
+  message
+});
+
+const parseRequestedScopeList = (scope) => parseScopes(scope, DEFAULT_GRANTED_SCOPES);
+
+const parseTokenScopeList = (scope) => parseScopes(scope);
+
+const normalizeGrantedScopes = (scopes) => {
+  if (!Array.isArray(scopes)) {
+    return [];
+  }
+
+  return Array.from(new Set(
+    scopes
+      .map((scope) => trimText(scope))
+      .filter(Boolean)
+  ));
+};
+
+const getAllowedRequestedScope = ({ requestedScope, grantedScopes }) => {
+  const allowedScopes = new Set(normalizeGrantedScopes(grantedScopes));
+  const allowedRequestedScopes = parseRequestedScopeList(requestedScope)
+    .filter((scope) => allowedScopes.has(scope));
+
+  if (!allowedRequestedScopes.length) {
+    throw createOAuthError({
+      statusCode: 403,
+      code: 'invalid_scope',
+      message: 'This user is not allowed to use the requested scope.'
+    });
+  }
+
+  return allowedRequestedScopes.join(' ');
+};
+
+const getAllowedTokenScope = ({ tokenScope, grantedScopes }) => {
+  const allowedScopes = new Set(normalizeGrantedScopes(grantedScopes));
+
+  return parseTokenScopeList(tokenScope)
+    .filter((scope) => allowedScopes.has(scope))
+    .join(' ');
 };
 
 const hasScope = (grantedScope, requiredScope) => {
@@ -45,14 +94,8 @@ const hasScope = (grantedScope, requiredScope) => {
     return true;
   }
 
-  return normalizeScope(grantedScope).split(' ').includes(requiredScope);
+  return parseTokenScopeList(grantedScope).includes(requiredScope);
 };
-
-const createOAuthError = ({ statusCode = 400, code = 'invalid_request', message }) => new AppError({
-  statusCode,
-  code,
-  message
-});
 
 const getAccessTokenSecret = () => {
   if (!OAUTH_ACCESS_TOKEN_SECRET) {
@@ -198,14 +241,19 @@ class OAuthService {
       });
     }
 
-    await userRepository.upsertGoogleUser({
+    const user = await userRepository.upsertGoogleUser({
       uid: decodedToken.uid,
       email: decodedToken.email,
       displayName: decodedToken.name,
       photoURL: decodedToken.picture,
       emailVerified: decodedToken.email_verified,
       provider: decodedToken.firebase?.sign_in_provider || 'google.com',
-      providerUid: getGoogleProviderUid(decodedToken)
+      providerUid: getGoogleProviderUid(decodedToken),
+      defaultGrantedScopes: DEFAULT_GRANTED_SCOPES
+    });
+    const grantedScope = getAllowedRequestedScope({
+      requestedScope: scope,
+      grantedScopes: user.grantedScopes
     });
 
     const code = randomToken(32);
@@ -215,7 +263,7 @@ class OAuthService {
       userId: decodedToken.uid,
       clientId,
       redirectUri,
-      scope,
+      scope: grantedScope,
       resource,
       codeChallenge,
       codeChallengeMethod,
@@ -320,7 +368,7 @@ class OAuthService {
     };
   }
 
-  verifyAccessToken(rawAccessToken, { requiredScope, resource }) {
+  async verifyAccessToken(rawAccessToken, { requiredScope, resource }) {
     const accessToken = trimText(rawAccessToken);
 
     if (!accessToken) {
@@ -351,7 +399,9 @@ class OAuthService {
       });
     }
 
-    if (!hasScope(tokenPayload.scope, requiredScope)) {
+    const tokenScope = parseTokenScopeList(tokenPayload.scope).join(' ');
+
+    if (!hasScope(tokenScope, requiredScope)) {
       throw createOAuthError({
         statusCode: 403,
         code: 'insufficient_scope',
@@ -359,10 +409,24 @@ class OAuthService {
       });
     }
 
+    const currentGrantedScopes = await userRepository.getGrantedScopes(tokenPayload.sub);
+    const currentTokenScope = getAllowedTokenScope({
+      tokenScope,
+      grantedScopes: currentGrantedScopes
+    });
+
+    if (!hasScope(currentTokenScope, requiredScope)) {
+      throw createOAuthError({
+        statusCode: 403,
+        code: 'insufficient_scope',
+        message: 'User is not allowed to use the required scope.'
+      });
+    }
+
     return {
       userId: tokenPayload.sub,
       clientId: tokenPayload.client_id,
-      scope: normalizeScope(tokenPayload.scope),
+      scope: currentTokenScope,
       resource: tokenPayload.resource || tokenPayload.aud
     };
   }
