@@ -159,6 +159,8 @@ Las tools no aceptan `token` ni `userId`. Esos datos se resuelven desde `Authori
 
 Las tools devuelven errores estructurados para agentes con `code`, `message`, `agentAction`, `missingFields` y `suggestedTool`. Por ejemplo, si falta `workspaceId` y el usuario tiene varios workspaces, la tool devuelve `workspace_required` y recomienda llamar `list_workspaces`.
 
+Las cuentas nuevas requieren saldo actual explicito. Si el agente intenta crear una cuenta sin `balance`, la tool devuelve `initial_balance_required` para que pregunte al usuario el saldo actual, o confirme que quiere iniciar en `0`.
+
 ## Firestore
 
 Las reglas se administran desde la consola de Firebase. La Function escribe con Admin SDK.

@@ -181,14 +181,14 @@ const registerFinanceTools = (server, { authContext }) => {
     name: 'upsert_account',
     config: {
       title: 'Create or update account',
-      description: 'Creates or updates a financial account/balance container in a workspace. Accounts represent where money lives or debt is tracked: bank account, cash, wallet, credit card, investment, loan, or other. Cash/efectivo should be modeled as an account with type=cash, usually named Efectivo. Call this before recording movements if the needed account does not exist.',
+      description: 'Creates or updates a financial account/balance container in a workspace. Accounts represent where money lives or debt is tracked: bank account, cash, wallet, credit card, investment, loan, or other. Cash/efectivo is an account with type=cash, usually named Efectivo. IMPORTANT: Do not create a new account silently just to complete another action. Before creating any new account, ask the user to confirm at least: account name, account type, currency, and current balance. For cash ask "cuanto efectivo tienes ahora en total?". For bank/wallet ask institution and current available balance. For credit cards/loans ask institution and current debt/balance. If the user does not know the balance, ask whether to start at 0 and warn that balances may be incomplete. Use this tool only after the user answers or explicitly confirms starting at 0.',
       inputSchema: {
         ...workspaceIdInput,
         accountId: optionalText(120).describe('Account ID to update. Omit to create or update by unique name.'),
         name: z.string().min(1).max(160).describe('Account name, such as BBVA, Mercado Pago, Efectivo, or BBVA Tarjeta Credito.'),
         type: z.enum(['bank', 'cash', 'wallet', 'credit_card', 'investment', 'loan', 'other']).default('bank'),
         currency: currencyInput,
-        balance: moneyInput.optional().describe('Current account balance. Omit it when updating metadata without changing balance. Can be negative for debt or loans. New accounts default to 0 when omitted.'),
+        balance: moneyInput.optional().describe('Current account balance. Required when creating a new account. Omit only when updating an existing account metadata without changing balance. Positive means money available; negative can represent debt for credit cards or loans.'),
         institution: optionalText(160),
         description: optionalText(500),
         active: z.boolean().optional()
@@ -212,7 +212,7 @@ const registerFinanceTools = (server, { authContext }) => {
     name: 'list_accounts',
     config: {
       title: 'List accounts',
-      description: 'Lists accounts in a workspace. Call this when an account is missing, ambiguous, or before writing a movement if you only know an account name. Never guess account IDs when multiple accounts could match.',
+      description: 'Lists accounts in a workspace. Call this before writing a movement when the account/payment source is unknown. If the list is empty, do not invent an account: ask the user how they paid or where the money came from, then create the needed account with upsert_account only after collecting setup details including current balance. Never guess account IDs when multiple accounts could match.',
       inputSchema: {
         ...workspaceIdInput
       },
@@ -290,7 +290,7 @@ const registerFinanceTools = (server, { authContext }) => {
     name: 'create_expense',
     config: {
       title: 'Create expense',
-      description: 'Registers an expense and subtracts it from the selected account balance. Required: amount, merchant, category, date, currency, and accountId or accountName. If the user paid in cash, use the cash account (usually accountName=Efectivo, type=cash) and omit paymentMethodId/paymentMethodName. Do not use paymentMethodName as a substitute for accountName. If workspaceId is missing and there are multiple workspaces, call list_workspaces first. If the account is unknown, call list_accounts or upsert_account. If a non-cash payment method is unknown, call list_payment_methods or upsert_payment_method. Ask the user for missing or ambiguous required fields before calling.',
+      description: 'Registers an expense and subtracts it from the selected account balance. Required: amount, merchant, category, date, currency, and accountId or accountName. Before calling this tool, identify how the user paid: cash, bank debit, credit card, wallet, transfer, etc. If payment source is missing, ask the user before writing. If there are no accounts yet or the needed account does not exist, do not auto-create it; first ask the user for account setup details and call upsert_account. For cash expenses, use an Efectivo account with type=cash and omit paymentMethodId/paymentMethodName. Do not use paymentMethodName as a substitute for accountName. If using debit/credit card, select or create the account first and only then use/create a payment method when helpful. Always give the user a brief summary before writing.',
       inputSchema: {
         ...workspaceIdInput,
         amount: moneyInput.describe('Expense amount as a positive number.'),
@@ -324,7 +324,7 @@ const registerFinanceTools = (server, { authContext }) => {
     name: 'create_income',
     config: {
       title: 'Create income',
-      description: 'Registers income and adds it to the selected account balance. Required: amount, category, date, currency, and accountId/accountName. If the account is unknown, call list_accounts or upsert_account first. Ask the user for missing source/category/account details before calling.',
+      description: 'Registers income and adds it to the selected account balance. Required: amount, category, date, currency, and accountId/accountName. Before calling, identify where the money entered: cash, bank, wallet, etc. If the destination account is unknown or does not exist, ask the user for account setup details including current balance and create it with upsert_account before recording income. Ask for missing source/category/account details before calling and summarize what will be recorded.',
       inputSchema: {
         ...workspaceIdInput,
         amount: moneyInput.describe('Income amount as a positive number.'),
@@ -357,7 +357,7 @@ const registerFinanceTools = (server, { authContext }) => {
     name: 'create_transfer',
     config: {
       title: 'Create transfer',
-      description: 'Moves money between two accounts and updates both balances. Use this for bank-to-wallet transfers and ATM withdrawals. For ATM withdrawal, model it as fromAccount=bank and toAccount=Efectivo/cash. Required: amount, date, currency, fromAccountId/fromAccountName, toAccountId/toAccountName. If either account is unknown, call list_accounts or upsert_account first. Never use the same account as origin and destination.',
+      description: 'Moves money between two existing accounts and updates both balances. Use this for bank-to-wallet transfers and ATM withdrawals. For ATM withdrawal, model it as fromAccount=bank and toAccount=Efectivo/cash. Required: amount, date, currency, fromAccountId/fromAccountName, toAccountId/toAccountName. If either account is missing, do not create it silently; ask the user for account setup details including current balance and create it with upsert_account first. Never use the same account as origin and destination. Summarize the origin, destination, amount, and resulting meaning before writing.',
       inputSchema: {
         ...workspaceIdInput,
         amount: moneyInput.describe('Transfer amount as a positive number.'),

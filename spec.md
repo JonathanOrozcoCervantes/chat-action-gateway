@@ -203,9 +203,10 @@ Antes de llamar una tool de escritura, ChatGPT debe:
 1. Extraer datos del mensaje, ticket o recibo del usuario.
 2. Identificar workspace, cuenta y metodo de pago cuando aplique.
 3. Llamar tools de listado si necesita resolver IDs.
-4. Preguntar al usuario por campos requeridos que falten o sean ambiguos.
-5. Dar un resumen breve de lo que se va a registrar.
-6. Llamar la tool de escritura solo cuando tenga datos suficientes.
+4. Si la cuenta no existe, preguntar al usuario los datos de configuracion antes de crearla: nombre, tipo, moneda, institucion si aplica y saldo actual.
+5. Preguntar al usuario por campos requeridos que falten o sean ambiguos.
+6. Dar un resumen breve de lo que se va a registrar.
+7. Llamar la tool de escritura solo cuando tenga datos suficientes.
 
 Ejemplo de resumen:
 
@@ -231,6 +232,7 @@ Ejemplos:
 ```txt
 workspace_required -> llamar list_workspaces y pedir al usuario que elija.
 account_required -> llamar list_accounts o crear cuenta con upsert_account.
+initial_balance_required -> preguntar saldo actual de la nueva cuenta antes de crearla.
 payment_method_not_found -> llamar list_payment_methods o crear metodo con upsert_payment_method.
 ambiguous_account -> mostrar coincidencias y pedir al usuario que elija.
 insufficient_scope -> pedir reconectar el connector con el scope requerido.

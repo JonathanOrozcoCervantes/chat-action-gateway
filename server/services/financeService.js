@@ -524,6 +524,49 @@ class FinanceService {
       requiredScope: 'accounts:write',
       suggestedTool: 'list_accounts'
     });
+
+    if (normalizedPayload.accountId) {
+      const existingAccount = await financeRepository.getAccount({
+        workspaceId: workspace.workspaceId,
+        accountId: normalizedPayload.accountId
+      });
+
+      if (!existingAccount) {
+        throw createAgentError({
+          code: 'account_not_found',
+          message: 'The accountId provided for update does not exist.',
+          agentAction: 'Call list_accounts and ask the user which existing account to update. To create a new account, omit accountId and provide name, type, currency, and current balance.',
+          suggestedTool: 'list_accounts',
+          details: {
+            workspaceId: workspace.workspaceId,
+            accountId: normalizedPayload.accountId
+          }
+        });
+      }
+    }
+
+    if (!normalizedPayload.accountId) {
+      const existingAccounts = await financeRepository.findAccountsByNormalizedName({
+        workspaceId: workspace.workspaceId,
+        normalizedName: normalizedPayload.normalizedName
+      });
+
+      if (!existingAccounts.length && !normalizedPayload.balanceWasProvided) {
+        throw createAgentError({
+          code: 'initial_balance_required',
+          message: 'A new account requires an explicit current balance.',
+          agentAction: 'Ask the user for the current balance of this account before creating it. For cash, ask how much cash they have right now. For bank or wallet accounts, ask the current available balance. For credit cards or loans, ask the current debt/balance. If the user does not know, ask whether they want to start from 0 and explain future balances may be incomplete.',
+          missingFields: ['balance'],
+          details: {
+            workspaceId: workspace.workspaceId,
+            accountName: normalizedPayload.name,
+            accountType: normalizedPayload.type,
+            currency: normalizedPayload.currency
+          }
+        });
+      }
+    }
+
     const result = await financeRepository.upsertAccount({
       workspaceId: workspace.workspaceId,
       payload: normalizedPayload
