@@ -7,7 +7,7 @@ Gateway web para que ChatGPT use un servidor MCP y registre acciones en Firestor
 - React + Vite para la pagina publica de estado.
 - Firebase Hosting para servir el frontend.
 - Firebase Functions 2nd gen (`apiV2`) con Express.
-- Firestore para usuarios, gastos, idempotencia, logs y codigos OAuth temporales.
+- Firestore para usuarios, workspaces, cuentas, metodos de pago, movimientos, idempotencia, logs y codigos OAuth temporales.
 - Firebase Authentication con Google para identificar al usuario.
 - Firebase App Check en la API HTTP normal consumida por el frontend.
 
@@ -94,15 +94,28 @@ La misma Function `apiV2` sirve el servidor MCP:
 https://chat-action-gateway.web.app/mcp
 ```
 
-El MCP usa OAuth con Google Sign-In. Cuando ChatGPT necesita autorizar el conector, abre `/oauth/authorize`; la Function redirige al frontend `/oauth-login`, ahi el usuario inicia sesion con Google. El backend verifica el ID token de Firebase Auth, crea o actualiza `users/{firebaseUid}` y emite el authorization code para ChatGPT.
+El MCP usa OAuth con Google Sign-In. Cuando ChatGPT necesita autorizar el conector, abre `/oauth/authorize`; la Function redirige al frontend `/oauth-login`, ahi el usuario inicia sesion con Google. El backend verifica el ID token de Firebase Auth, crea o actualiza `users/{firebaseUid}`, crea un workspace personal si el usuario aun no tiene workspaces y emite el authorization code para ChatGPT.
 
-Los permisos OAuth se controlan por usuario en Firestore con el campo array `grantedScopes` dentro de `users/{firebaseUid}`. Al crear un usuario nuevo, o cuando el campo aun no existe, se inicializa con:
+OAuth solo identifica al usuario y emite access tokens con scopes soportados por el MCP:
 
 ```json
-["expenses:write"]
+[
+  "workspaces:read",
+  "workspaces:write",
+  "members:read",
+  "members:write",
+  "accounts:read",
+  "accounts:write",
+  "payment_methods:read",
+  "payment_methods:write",
+  "movements:read",
+  "expenses:write",
+  "income:write",
+  "transfers:write"
+]
 ```
 
-Si ChatGPT solicita mas scopes al registrar o autorizar el MCP, el backend solo concede la interseccion entre lo solicitado y `grantedScopes`. Cada request MCP tambien vuelve a revisar el array actual del usuario, asi que quitar un scope en Firestore bloquea el siguiente uso aunque exista un access token emitido antes. Para bloquear el acceso MCP de un usuario puedes dejar `grantedScopes` como un array vacio.
+Los permisos reales viven en `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes`. Cada tool valida esos scopes del miembro antes de leer o escribir datos del workspace. Para bloquear el acceso de un usuario a un workspace puedes dejar ese array vacio o cambiar `status` a `inactive`.
 
 Rutas OAuth publicadas:
 
@@ -124,13 +137,27 @@ Configuracion manual en ChatGPT, si la deteccion automatica no llena todo:
 - Token URL: `https://chat-action-gateway.web.app/oauth/token`
 - Registration URL: `https://chat-action-gateway.web.app/oauth/register`
 - Resource: `https://chat-action-gateway.web.app/mcp`
-- Scopes: `expenses:write`
+- Scopes: `workspaces:read workspaces:write members:read members:write accounts:read accounts:write payment_methods:read payment_methods:write movements:read expenses:write income:write transfers:write`
 
 Tools disponibles:
 
-- `create_expense`: registra un gasto para el usuario autenticado por OAuth.
+- `create_workspace`: crea un workspace personal o de negocio.
+- `list_workspaces`: lista los workspaces disponibles para elegir `workspaceId`.
+- `add_workspace_member`: agrega o actualiza un miembro existente del MCP en un workspace y define sus scopes por workspace.
+- `list_workspace_members`: lista miembros de un workspace y sus scopes.
+- `upsert_account`: crea o actualiza una cuenta como BBVA, Mercado Pago o Efectivo.
+- `list_accounts`: lista cuentas de un workspace.
+- `upsert_payment_method`: crea o actualiza un metodo de pago dentro de una cuenta.
+- `list_payment_methods`: lista metodos de pago de una cuenta.
+- `create_expense`: registra un gasto y descuenta saldo de la cuenta.
+- `create_income`: registra un ingreso y suma saldo a la cuenta.
+- `create_transfer`: mueve dinero entre dos cuentas.
+- `set_account_balance`: ajusta el saldo de una cuenta y deja movimiento de auditoria.
+- `list_movements`: consulta movimientos por rango de tiempo y filtros.
 
-La tool no acepta `token` ni `userId`. Esos datos se resuelven desde `Authorization: Bearer <access_token>` en cada request MCP.
+Las tools no aceptan `token` ni `userId`. Esos datos se resuelven desde `Authorization: Bearer <access_token>` en cada request MCP.
+
+Las tools devuelven errores estructurados para agentes con `code`, `message`, `agentAction`, `missingFields` y `suggestedTool`. Por ejemplo, si falta `workspaceId` y el usuario tiene varios workspaces, la tool devuelve `workspace_required` y recomienda llamar `list_workspaces`.
 
 ## Firestore
 
@@ -139,10 +166,27 @@ Las reglas se administran desde la consola de Firebase. La Function escribe con 
 Colecciones actuales:
 
 - `users/{firebaseUid}`
-- `users/{firebaseUid}/expenses/{expenseId}`
-- `users/{firebaseUid}/idempotencyKeys/{idempotencyHash}`
+- `workspaces/{workspaceId}`
+- `workspaces/{workspaceId}/members/{firebaseUid}`
+- `workspaces/{workspaceId}/accounts/{accountId}`
+- `workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}`
+- `workspaces/{workspaceId}/movements/{movementId}`
+- `workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}`
 - `actionLogs/{logId}`
 - `oauthAuthorizationCodes/{codeHash}`
+
+`users/{firebaseUid}` mantiene `workspaces` y `defaultWorkspaceId` para ubicar los espacios del usuario. `workspaces/{workspaceId}/members/{firebaseUid}` guarda `role`, `status` y `grantedScopes` para controlar que puede hacer cada miembro dentro de ese workspace. Los usuarios solo pueden usar las tools cuyos scopes existan en su documento de miembro. Los owners nuevos se crean con todos los scopes en su documento `members/{firebaseUid}`.
+
+Para agregar miembros con `add_workspace_member`, la persona ya debe haber iniciado sesion una vez con Google en este MCP. La tool puede buscarla por `memberEmail` o por `memberUserId`. Si no existe, la tool devuelve `member_user_not_found` para que el agente le indique que primero conecte el MCP con Google.
+
+Los movimientos viven en una coleccion unificada con `type`:
+
+- `expense`
+- `income`
+- `transfer`
+- `balance_adjustment`
+
+Cada movimiento guarda `lines` con los impactos por cuenta. Un gasto tiene una linea negativa, un ingreso una positiva, y una transferencia una negativa en origen y una positiva en destino.
 
 Colecciones antiguas que ya no usa el codigo:
 
@@ -155,8 +199,8 @@ Despues de desplegar y probar el login nuevo, esas colecciones antiguas se puede
 
 ## Idempotencia
 
-Cada gasto requiere un `idempotencyKey`. La Function lo normaliza a `idempotencyHash` para usarlo como ID seguro en:
+Cada escritura financiera acepta `idempotencyKey`. Si no se envia, el MCP genera uno. La Function lo normaliza a `idempotencyHash` para usarlo como ID seguro en:
 
 ```txt
-users/{firebaseUid}/idempotencyKeys/{idempotencyHash}
+workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
 ```

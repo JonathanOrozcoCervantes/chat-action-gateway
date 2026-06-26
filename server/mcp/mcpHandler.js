@@ -3,9 +3,9 @@ const { createMcpServer } = require('./mcpServer');
 const oauthService = require('../services/oauthService');
 const { getMcpResourceUrl, getPublicBaseUrl } = require('../utils/http');
 const { logError, logInfo, logWarning } = require('../utils/logger');
+const { DEFAULT_OAUTH_SCOPE } = require('./scopes');
 
 const MCP_METHODS = new Set(['POST', 'GET', 'DELETE']);
-const REQUIRED_SCOPE = 'expenses:write';
 
 const setMcpCorsHeaders = (res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -48,7 +48,7 @@ const sendAuthChallenge = (req, res, error) => {
   if (statusCode === 401 || statusCode === 403) {
     res.setHeader(
       'WWW-Authenticate',
-      `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource", scope="${REQUIRED_SCOPE}"`
+      `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource", scope="${DEFAULT_OAUTH_SCOPE}"`
     );
   }
 
@@ -80,7 +80,6 @@ const handleMcpRequest = async (req, res) => {
 
   try {
     authContext = await oauthService.verifyAccessToken(getBearerToken(req), {
-      requiredScope: REQUIRED_SCOPE,
       resource: getMcpResourceUrl(req)
     });
   } catch (error) {

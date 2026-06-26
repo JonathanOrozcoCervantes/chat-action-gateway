@@ -2,9 +2,9 @@
 
 ## Resumen del proyecto
 
-Chat Action Gateway es un puente entre ChatGPT y sistemas internos propios. El proyecto expone un servidor MCP que ChatGPT puede conectar mediante OAuth, autentica a cada persona con Google/Firebase Auth y registra acciones en Firestore bajo el usuario correcto.
+Chat Action Gateway es un puente entre ChatGPT y sistemas internos propios. El proyecto expone un servidor MCP que ChatGPT puede conectar mediante OAuth, autentica a cada persona con Google/Firebase Auth y registra acciones financieras en Firestore bajo el workspace correcto.
 
-El primer caso de uso es finanzas personales: registrar gastos desde ChatGPT. La arquitectura debe permitir agregar mas herramientas MCP y endpoints HTTP normales en el futuro.
+La etapa actual es Finanzas personales pro. El modelo debe permitir crecer despues a microempresarios con facturas, clientes, proveedores, ventas y compras sin reorganizar las colecciones principales.
 
 ## Modelo actual
 
@@ -17,85 +17,229 @@ El flujo principal ya no usa enlaces `/action/...` con `token` por URL. El model
 5. Firebase Authentication entrega un ID token.
 6. La Function verifica el ID token con Admin SDK.
 7. Se crea o actualiza `users/{firebaseUid}`.
-8. El backend valida que el usuario tenga en `grantedScopes` los permisos solicitados.
-9. ChatGPT recibe un access token OAuth con los scopes concedidos.
-10. Cada tool MCP usa `Authorization: Bearer <access_token>`.
-11. El backend resuelve el usuario desde el access token y escribe en `users/{firebaseUid}`.
+8. Si el usuario no tiene workspaces, se crea un workspace personal.
+9. El backend valida que los scopes solicitados existan en la lista soportada por el MCP.
+10. ChatGPT recibe un access token OAuth con los scopes concedidos.
+11. Cada request MCP usa `Authorization: Bearer <access_token>`.
+12. Cada tool valida el scope especifico contra `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` y escribe o consulta en el workspace correcto.
 
 Este modelo permite que muchas personas usen el mismo MCP sin mezclar registros.
 
-## Caso de uso inicial: gastos personales
-
-La tool MCP inicial es `create_expense`.
-
-Campos esperados:
-
-```txt
-amount
-merchant
-category
-date
-currency
-description
-paymentMethod
-notes
-idempotencyKey
-```
-
-Campos requeridos:
-
-```txt
-amount
-merchant
-category
-date
-currency
-idempotencyKey
-```
-
-La fecha debe usar formato `YYYY-MM-DD` y `currency` debe ser un codigo ISO 4217 como `MXN` o `USD`.
-
-## Comportamiento esperado del agente
-
-Antes de llamar la tool, ChatGPT debe:
-
-1. Extraer datos del ticket, recibo o mensaje del usuario.
-2. Inferir una categoria si hay informacion suficiente.
-3. Preguntar al usuario por campos requeridos que falten o sean ambiguos.
-4. Dar un resumen breve de lo que se va a registrar.
-5. Llamar `create_expense` solo cuando tenga datos suficientes.
-
-Ejemplo de resumen:
-
-```txt
-Voy a registrar $183.50 MXN en Oxxo, categoria comida, fecha 2026-06-23, pagado con tarjeta.
-```
-
-## Firestore
-
-Colecciones actuales:
+## Modelo Firestore
 
 ```txt
 users/{firebaseUid}
-users/{firebaseUid}/expenses/{expenseId}
-users/{firebaseUid}/idempotencyKeys/{idempotencyHash}
+workspaces/{workspaceId}
+workspaces/{workspaceId}/members/{firebaseUid}
+workspaces/{workspaceId}/accounts/{accountId}
+workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
+workspaces/{workspaceId}/movements/{movementId}
+workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
 actionLogs/{logId}
 oauthAuthorizationCodes/{codeHash}
 ```
 
-`users/{firebaseUid}` usa el UID real de Firebase Authentication como ID del documento.
-
-Cada usuario tiene un campo array `grantedScopes`. Si el campo no existe al hacer login, se inicializa con:
+`users/{firebaseUid}` usa el UID real de Firebase Authentication como ID del documento. Tambien mantiene:
 
 ```txt
-expenses:write
+workspaces
+defaultWorkspaceId
 ```
 
-El access token OAuth solo incluye scopes que hayan sido solicitados por ChatGPT y que tambien existan en `users/{firebaseUid}.grantedScopes`. Cada request MCP vuelve a validar el scope requerido contra el array actual del usuario.
+`workspaces/{workspaceId}/members/{firebaseUid}` queda como base para roles y permisos por workspace.
+
+## Scopes OAuth
+
+El MCP soporta:
+
+```txt
+workspaces:read
+workspaces:write
+members:read
+members:write
+accounts:read
+accounts:write
+payment_methods:read
+payment_methods:write
+movements:read
+expenses:write
+income:write
+transfers:write
+```
+
+El access token OAuth solo incluye scopes que hayan sido solicitados por ChatGPT y que existan en la lista soportada por el MCP. OAuth no decide permisos sobre datos de workspace; cada tool valida el scope especifico dentro de `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes`.
+
+## Finanzas personales pro
+
+La etapa 1 permite:
+
+- Registrar gastos.
+- Registrar ingresos.
+- Registrar transferencias.
+- Consultar movimientos por rango de tiempo.
+- Manejar workspaces.
+- Manejar miembros y permisos por workspace.
+- Manejar cuentas.
+- Manejar metodos de pago dentro de cuentas.
+- Ajustar saldos con movimiento de auditoria.
+
+## Tools MCP
+
+```txt
+create_workspace
+list_workspaces
+add_workspace_member
+list_workspace_members
+upsert_account
+list_accounts
+upsert_payment_method
+list_payment_methods
+create_expense
+create_income
+create_transfer
+set_account_balance
+list_movements
+```
+
+Las tools de escritura actualizan saldos dentro de una transaccion Firestore y crean registros de idempotencia.
+
+## Miembros y permisos por workspace
+
+Los miembros viven en:
+
+```txt
+workspaces/{workspaceId}/members/{firebaseUid}
+```
+
+Cada miembro guarda:
+
+```txt
+role
+status
+grantedScopes
+```
+
+`workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` controla lo que ese usuario puede hacer en ese workspace. Para bloquear a un usuario en un workspace se puede dejar ese array vacio o marcar el miembro como `inactive`.
+
+Para agregar miembros:
+
+1. La persona debe haber conectado el MCP con Google al menos una vez para existir como `users/{firebaseUid}`.
+2. El owner o administrador llama `add_workspace_member`.
+3. Se indica `memberEmail` o `memberUserId`.
+4. Se indica `accessLevel` (`read`, `write`, `read_write`) o `scopes` exactos con `accessLevel=custom`.
+5. La tool actualiza `workspaces/{workspaceId}/members/{firebaseUid}` y agrega el workspace en `users/{firebaseUid}.workspaces`.
+
+`read_write` concede lectura financiera y escritura financiera comun, pero no concede `members:write`. Para permitir que un miembro administre miembros se debe incluir explicitamente `members:read` y `members:write` en `scopes`.
+
+## Cuentas y metodos de pago
+
+Las cuentas representan contenedores de saldo:
+
+```txt
+bank
+cash
+wallet
+credit_card
+investment
+loan
+other
+```
+
+Los metodos de pago son subcolecciones dentro de cuentas:
+
+```txt
+workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
+```
+
+Tipos iniciales:
+
+```txt
+debit_card
+credit_card
+cash
+bank_transfer
+spei
+wallet_balance
+other
+```
+
+Si el usuario dice "saque $1,000 del cajero de BBVA", el agente debe modelarlo como transferencia de BBVA a una cuenta de tipo `cash`, por ejemplo Efectivo.
+
+## Movimientos
+
+Todos los registros financieros viven en:
+
+```txt
+workspaces/{workspaceId}/movements/{movementId}
+```
+
+Tipos:
+
+```txt
+expense
+income
+transfer
+balance_adjustment
+```
+
+Cada movimiento guarda `amountMinor` para evitar errores decimales y `amount` para lectura. Tambien guarda `lines` con impactos por cuenta:
+
+```js
+[
+  {
+    accountId: '...',
+    accountName: 'BBVA',
+    amountMinor: -200000,
+    amount: -2000,
+    direction: 'outflow'
+  }
+]
+```
+
+## Comportamiento esperado del agente
+
+Antes de llamar una tool de escritura, ChatGPT debe:
+
+1. Extraer datos del mensaje, ticket o recibo del usuario.
+2. Identificar workspace, cuenta y metodo de pago cuando aplique.
+3. Llamar tools de listado si necesita resolver IDs.
+4. Preguntar al usuario por campos requeridos que falten o sean ambiguos.
+5. Dar un resumen breve de lo que se va a registrar.
+6. Llamar la tool de escritura solo cuando tenga datos suficientes.
+
+Ejemplo de resumen:
+
+```txt
+Voy a registrar un gasto de $183.50 MXN en Oxxo, categoria comida, fecha 2026-06-25, saliendo de BBVA.
+```
+
+## Errores para agentes
+
+Las tools deben devolver errores estructurados con:
+
+```txt
+code
+message
+agentAction
+missingFields
+suggestedTool
+details
+```
+
+Ejemplos:
+
+```txt
+workspace_required -> llamar list_workspaces y pedir al usuario que elija.
+account_required -> llamar list_accounts o crear cuenta con upsert_account.
+payment_method_not_found -> llamar list_payment_methods o crear metodo con upsert_payment_method.
+ambiguous_account -> mostrar coincidencias y pedir al usuario que elija.
+insufficient_scope -> pedir reconectar el connector con el scope requerido.
+workspace_scope_denied -> avisar que el usuario no tiene permiso en ese workspace y pedir a un owner que actualice sus scopes.
+```
 
 ## Idempotencia
 
-Cada gasto debe incluir `idempotencyKey`. El backend calcula:
+Cada escritura financiera acepta `idempotencyKey`. Si el agente no lo envia, el MCP genera uno. El backend calcula:
 
 ```txt
 idempotencyHash = SHA-256(idempotencyKey)
@@ -104,7 +248,7 @@ idempotencyHash = SHA-256(idempotencyKey)
 Y lo guarda en:
 
 ```txt
-users/{firebaseUid}/idempotencyKeys/{idempotencyHash}
+workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
 ```
 
 Si ya existe, se rechaza la accion como duplicada.
@@ -138,14 +282,3 @@ La API normal debe servir como base para futuros endpoints HTTP propios. No debe
 /oauth/register
 /api/ping
 ```
-
-## Requisitos funcionales del MVP
-
-- Autenticar al usuario del MCP con Google/Firebase Auth.
-- Crear o actualizar `users/{firebaseUid}` sin duplicar usuarios.
-- Registrar gastos en `users/{firebaseUid}/expenses`.
-- Evitar duplicados con `idempotencyKey`.
-- Guardar logs de cada intento de registro.
-- Mantener la API HTTP normal separada del MCP.
-- Dejar una referencia clara para agregar nuevos endpoints API.
-- Dejar una referencia clara para agregar nuevas tools MCP.

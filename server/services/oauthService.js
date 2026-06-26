@@ -1,13 +1,14 @@
 const { admin } = require('../firebaseAdmin');
+const financeService = require('./financeService');
 const oauthRepository = require('../repositories/oauthRepository');
 const userRepository = require('../repositories/userRepository');
 const { OAUTH_ACCESS_TOKEN_SECRET } = require('../config/settings');
 const AppError = require('../utils/AppError');
 const { createPkceChallenge, hashValue, randomToken } = require('../utils/security');
 const { signJwt, verifyJwt } = require('../utils/jwt');
+const { DEFAULT_OAUTH_SCOPE, FINANCE_SCOPES } = require('../mcp/scopes');
 
-const DEFAULT_SCOPE = 'expenses:write';
-const DEFAULT_GRANTED_SCOPES = [DEFAULT_SCOPE];
+const SUPPORTED_SCOPES = new Set(FINANCE_SCOPES);
 const STATIC_CLIENT_ID = 'chat-action-gateway-chatgpt';
 const AUTH_CODE_TTL_SECONDS = 10 * 60;
 const ACCESS_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -41,53 +42,35 @@ const parseScopes = (scope, defaultScopes = []) => {
   return Array.from(new Set(scopes.length ? scopes : defaultScopes));
 };
 
-const normalizeScope = (scope) => parseScopes(scope, DEFAULT_GRANTED_SCOPES).join(' ');
-
 const createOAuthError = ({ statusCode = 400, code = 'invalid_request', message }) => new AppError({
   statusCode,
   code,
   message
 });
 
-const parseRequestedScopeList = (scope) => parseScopes(scope, DEFAULT_GRANTED_SCOPES);
+const parseRequestedScopeList = (scope) => parseScopes(scope, FINANCE_SCOPES);
 
 const parseTokenScopeList = (scope) => parseScopes(scope);
 
-const normalizeGrantedScopes = (scopes) => {
-  if (!Array.isArray(scopes)) {
-    return [];
-  }
+const getSupportedRequestedScope = (requestedScope) => {
+  const requestedScopes = parseRequestedScopeList(requestedScope);
+  const unsupportedScopes = requestedScopes.filter((scope) => !SUPPORTED_SCOPES.has(scope));
 
-  return Array.from(new Set(
-    scopes
-      .map((scope) => trimText(scope))
-      .filter(Boolean)
-  ));
-};
-
-const getAllowedRequestedScope = ({ requestedScope, grantedScopes }) => {
-  const allowedScopes = new Set(normalizeGrantedScopes(grantedScopes));
-  const allowedRequestedScopes = parseRequestedScopeList(requestedScope)
-    .filter((scope) => allowedScopes.has(scope));
-
-  if (!allowedRequestedScopes.length) {
+  if (unsupportedScopes.length) {
     throw createOAuthError({
-      statusCode: 403,
       code: 'invalid_scope',
-      message: 'This user is not allowed to use the requested scope.'
+      message: `Unsupported scope requested: ${unsupportedScopes.join(', ')}.`
     });
   }
 
-  return allowedRequestedScopes.join(' ');
+  return requestedScopes.join(' ');
 };
 
-const getAllowedTokenScope = ({ tokenScope, grantedScopes }) => {
-  const allowedScopes = new Set(normalizeGrantedScopes(grantedScopes));
+const normalizeScope = (scope) => getSupportedRequestedScope(scope);
 
-  return parseTokenScopeList(tokenScope)
-    .filter((scope) => allowedScopes.has(scope))
-    .join(' ');
-};
+const normalizeTokenScope = (scope) => parseTokenScopeList(scope)
+  .filter((tokenScope) => SUPPORTED_SCOPES.has(tokenScope))
+  .join(' ');
 
 const hasScope = (grantedScope, requiredScope) => {
   if (!requiredScope) {
@@ -164,7 +147,7 @@ class OAuthService {
       });
     }
 
-    const scope = normalizeScope(payload.scope || DEFAULT_SCOPE);
+    const scope = normalizeScope(payload.scope || DEFAULT_OAUTH_SCOPE);
 
     return {
       client_id: `chatgpt_${randomToken(18)}`,
@@ -183,7 +166,7 @@ class OAuthService {
     const redirectUri = trimText(payload.redirect_uri);
     const codeChallenge = trimText(payload.code_challenge);
     const codeChallengeMethod = trimText(payload.code_challenge_method || 'S256');
-    const scope = normalizeScope(payload.scope || DEFAULT_SCOPE);
+    const scope = normalizeScope(payload.scope || DEFAULT_OAUTH_SCOPE);
     const resource = trimText(payload.resource || expectedResource);
 
     if (responseType !== 'code') {
@@ -241,19 +224,19 @@ class OAuthService {
       });
     }
 
-    const user = await userRepository.upsertGoogleUser({
+    await userRepository.upsertGoogleUser({
       uid: decodedToken.uid,
       email: decodedToken.email,
       displayName: decodedToken.name,
       photoURL: decodedToken.picture,
       emailVerified: decodedToken.email_verified,
       provider: decodedToken.firebase?.sign_in_provider || 'google.com',
-      providerUid: getGoogleProviderUid(decodedToken),
-      defaultGrantedScopes: DEFAULT_GRANTED_SCOPES
+      providerUid: getGoogleProviderUid(decodedToken)
     });
-    const grantedScope = getAllowedRequestedScope({
-      requestedScope: scope,
-      grantedScopes: user.grantedScopes
+    await financeService.ensurePersonalWorkspaceForUser({
+      userId: decodedToken.uid,
+      displayName: decodedToken.name,
+      currency: 'MXN'
     });
 
     const code = randomToken(32);
@@ -263,7 +246,7 @@ class OAuthService {
       userId: decodedToken.uid,
       clientId,
       redirectUri,
-      scope: grantedScope,
+      scope,
       resource,
       codeChallenge,
       codeChallengeMethod,
@@ -351,7 +334,16 @@ class OAuthService {
     scope,
     resource
   }) {
-    const normalizedScope = normalizeScope(scope);
+    const normalizedScope = normalizeTokenScope(scope);
+
+    if (!normalizedScope) {
+      throw createOAuthError({
+        statusCode: 500,
+        code: 'missing_granted_scope',
+        message: 'Cannot issue an access token without granted scopes.'
+      });
+    }
+
     const accessToken = signJwt({
       sub: userId,
       client_id: clientId,
@@ -409,24 +401,10 @@ class OAuthService {
       });
     }
 
-    const currentGrantedScopes = await userRepository.getGrantedScopes(tokenPayload.sub);
-    const currentTokenScope = getAllowedTokenScope({
-      tokenScope,
-      grantedScopes: currentGrantedScopes
-    });
-
-    if (!hasScope(currentTokenScope, requiredScope)) {
-      throw createOAuthError({
-        statusCode: 403,
-        code: 'insufficient_scope',
-        message: 'User is not allowed to use the required scope.'
-      });
-    }
-
     return {
       userId: tokenPayload.sub,
       clientId: tokenPayload.client_id,
-      scope: currentTokenScope,
+      scope: tokenScope,
       resource: tokenPayload.resource || tokenPayload.aud
     };
   }

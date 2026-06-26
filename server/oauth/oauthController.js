@@ -1,7 +1,6 @@
 const oauthService = require('../services/oauthService');
 const { getMcpResourceUrl, getPublicBaseUrl } = require('../utils/http');
-
-const DEFAULT_SCOPE = 'expenses:write';
+const { DEFAULT_OAUTH_SCOPE, FINANCE_SCOPES } = require('../mcp/scopes');
 
 const AUTHORIZE_FIELDS = [
   'response_type',
@@ -54,7 +53,7 @@ const getProtectedResourceMetadata = (req, res) => {
   res.status(200).json({
     resource: `${baseUrl}/mcp`,
     authorization_servers: [baseUrl],
-    scopes_supported: [DEFAULT_SCOPE],
+    scopes_supported: FINANCE_SCOPES,
     bearer_methods_supported: ['header'],
     resource_documentation: `${baseUrl}/`
   });
@@ -72,14 +71,14 @@ const getAuthorizationServerMetadata = (req, res) => {
     grant_types_supported: ['authorization_code'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: [DEFAULT_SCOPE],
+    scopes_supported: FINANCE_SCOPES,
     resource_parameter_supported: true
   });
 };
 
 const getAuthorizePage = (req, res) => {
   const params = {
-    scope: DEFAULT_SCOPE,
+    scope: DEFAULT_OAUTH_SCOPE,
     resource: getMcpResourceUrl(req),
     ...pickAuthorizeParams(req.query)
   };
@@ -93,7 +92,7 @@ const authorize = async (req, res) => {
   try {
     const result = await oauthService.createAuthorizationCode({
       payload: {
-        scope: DEFAULT_SCOPE,
+        scope: DEFAULT_OAUTH_SCOPE,
         resource: getMcpResourceUrl(req),
         ...params
       },
