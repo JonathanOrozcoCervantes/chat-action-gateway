@@ -2,9 +2,26 @@ const { db, admin } = require('../firebaseAdmin');
 const { FINANCE_SCOPES } = require('../mcp/profiles/finance/scopes');
 const AppError = require('../utils/AppError');
 
+const FINANCE_WORKSPACES_COLLECTION = 'financeWorkspaces';
+const FINANCE_PROFILE_ID = 'finance';
+
 const cleanData = (data) => Object.fromEntries(
   Object.entries(data).filter(([, value]) => value !== undefined)
 );
+
+const getFinanceProfile = (userData = {}) => {
+  const profile = userData.profiles?.[FINANCE_PROFILE_ID];
+  return profile && typeof profile === 'object' ? profile : {};
+};
+
+const getFinanceWorkspaceState = (userData = {}) => {
+  const profile = getFinanceProfile(userData);
+
+  return {
+    defaultWorkspaceId: profile.defaultWorkspaceId || '',
+    workspaceIds: Array.isArray(profile.workspaceIds) ? profile.workspaceIds : []
+  };
+};
 
 const withId = (snapshot) => {
   if (!snapshot.exists) {
@@ -49,11 +66,11 @@ class FinanceRepository {
     const userRef = db.collection('users').doc(userId);
     const userSnapshot = await userRef.get();
     const userData = userSnapshot.exists ? userSnapshot.data() : {};
-    const workspaces = Array.isArray(userData.workspaces) ? userData.workspaces : [];
+    const { defaultWorkspaceId, workspaceIds } = getFinanceWorkspaceState(userData);
 
-    if (workspaces.length) {
+    if (workspaceIds.length) {
       return {
-        workspaceId: userData.defaultWorkspaceId || workspaces[0],
+        workspaceId: defaultWorkspaceId || workspaceIds[0],
         created: false
       };
     }
@@ -76,7 +93,7 @@ class FinanceRepository {
   }
 
   async createWorkspace({ userId, payload, makeDefault = false }) {
-    const workspaceRef = db.collection('workspaces').doc();
+    const workspaceRef = db.collection(FINANCE_WORKSPACES_COLLECTION).doc();
     const userRef = db.collection('users').doc(userId);
     const memberRef = workspaceRef.collection('members').doc(userId);
 
@@ -84,8 +101,8 @@ class FinanceRepository {
       const userSnapshot = await transaction.get(userRef);
       const userData = userSnapshot.exists ? userSnapshot.data() : {};
       const now = admin.firestore.FieldValue.serverTimestamp();
-      const currentWorkspaces = Array.isArray(userData.workspaces) ? userData.workspaces : [];
-      const shouldSetDefault = makeDefault || !userData.defaultWorkspaceId || !currentWorkspaces.length;
+      const { defaultWorkspaceId, workspaceIds } = getFinanceWorkspaceState(userData);
+      const shouldSetDefault = makeDefault || !defaultWorkspaceId || !workspaceIds.length;
 
       transaction.set(workspaceRef, cleanData({
         name: payload.name,
@@ -110,8 +127,12 @@ class FinanceRepository {
       });
 
       transaction.set(userRef, cleanData({
-        workspaces: admin.firestore.FieldValue.arrayUnion(workspaceRef.id),
-        defaultWorkspaceId: shouldSetDefault ? workspaceRef.id : undefined,
+        profiles: {
+          finance: cleanData({
+            workspaceIds: admin.firestore.FieldValue.arrayUnion(workspaceRef.id),
+            defaultWorkspaceId: shouldSetDefault ? workspaceRef.id : undefined
+          })
+        },
         updatedAt: now
       }), { merge: true });
     });
@@ -132,10 +153,11 @@ class FinanceRepository {
     }
 
     const data = userSnapshot.data();
+    const { defaultWorkspaceId, workspaceIds } = getFinanceWorkspaceState(data);
 
     return {
-      defaultWorkspaceId: data.defaultWorkspaceId || '',
-      workspaceIds: Array.isArray(data.workspaces) ? data.workspaces : []
+      defaultWorkspaceId,
+      workspaceIds
     };
   }
 
@@ -146,7 +168,7 @@ class FinanceRepository {
       return [];
     }
 
-    const refs = workspaceIds.map((workspaceId) => db.collection('workspaces').doc(workspaceId));
+    const refs = workspaceIds.map((workspaceId) => db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId));
     const snapshots = await db.getAll(...refs);
 
     return snapshots
@@ -161,13 +183,13 @@ class FinanceRepository {
   }
 
   async getWorkspace(workspaceId) {
-    const snapshot = await db.collection('workspaces').doc(workspaceId).get();
+    const snapshot = await db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId).get();
     return mapDocument(snapshot);
   }
 
   async getWorkspaceMember({ workspaceId, userId }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('members')
       .doc(userId)
@@ -213,7 +235,7 @@ class FinanceRepository {
 
   async listWorkspaceMembers({ workspaceId, includeInactive = false }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('members')
       .get();
@@ -274,7 +296,7 @@ class FinanceRepository {
     notes,
     addedByUserId
   }) {
-    const workspaceRef = db.collection('workspaces').doc(workspaceId);
+    const workspaceRef = db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId);
     const userRef = db.collection('users').doc(targetUser.userId);
     const memberRef = workspaceRef.collection('members').doc(targetUser.userId);
     let created = false;
@@ -304,7 +326,8 @@ class FinanceRepository {
 
       const now = admin.firestore.FieldValue.serverTimestamp();
       const userData = userSnapshot.data() || {};
-      const existingWorkspaces = Array.isArray(userData.workspaces) ? userData.workspaces : [];
+      const { defaultWorkspaceId, workspaceIds } = getFinanceWorkspaceState(userData);
+      const shouldSetDefault = !defaultWorkspaceId && !workspaceIds.length;
       created = !memberSnapshot.exists;
 
       transaction.set(memberRef, cleanData({
@@ -327,8 +350,12 @@ class FinanceRepository {
       }, { merge: true });
 
       transaction.set(userRef, cleanData({
-        workspaces: admin.firestore.FieldValue.arrayUnion(workspaceId),
-        defaultWorkspaceId: existingWorkspaces.length ? undefined : workspaceId,
+        profiles: {
+          finance: cleanData({
+            workspaceIds: admin.firestore.FieldValue.arrayUnion(workspaceId),
+            defaultWorkspaceId: shouldSetDefault ? workspaceId : undefined
+          })
+        },
         updatedAt: now
       }), { merge: true });
     });
@@ -341,7 +368,7 @@ class FinanceRepository {
 
   async listCategories({ workspaceId, type = '', includeInactive = false }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('categories')
       .orderBy('name')
@@ -359,7 +386,7 @@ class FinanceRepository {
 
   async getCategory({ workspaceId, categoryId }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('categories')
       .doc(categoryId)
@@ -375,7 +402,7 @@ class FinanceRepository {
 
   async findCategoriesByNormalizedName({ workspaceId, normalizedName }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('categories')
       .where('normalizedName', '==', normalizedName)
@@ -393,7 +420,7 @@ class FinanceRepository {
 
   async upsertCategory({ workspaceId, payload }) {
     const categoriesRef = db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('categories');
     const now = admin.firestore.FieldValue.serverTimestamp();
@@ -427,7 +454,7 @@ class FinanceRepository {
 
   async listAccounts(workspaceId) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts')
       .orderBy('name')
@@ -444,7 +471,7 @@ class FinanceRepository {
 
   async getAccount({ workspaceId, accountId }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts')
       .doc(accountId)
@@ -460,7 +487,7 @@ class FinanceRepository {
 
   async findAccountsByNormalizedName({ workspaceId, normalizedName }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts')
       .where('normalizedName', '==', normalizedName)
@@ -478,7 +505,7 @@ class FinanceRepository {
 
   async upsertAccount({ workspaceId, payload }) {
     const accountsRef = db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts');
     const now = admin.firestore.FieldValue.serverTimestamp();
@@ -518,7 +545,7 @@ class FinanceRepository {
 
   async listPaymentMethods({ workspaceId, accountId }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts')
       .doc(accountId)
@@ -538,7 +565,7 @@ class FinanceRepository {
 
   async getPaymentMethod({ workspaceId, accountId, paymentMethodId }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts')
       .doc(accountId)
@@ -557,7 +584,7 @@ class FinanceRepository {
 
   async findPaymentMethodsByNormalizedName({ workspaceId, accountId, normalizedName }) {
     const snapshot = await db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts')
       .doc(accountId)
@@ -578,7 +605,7 @@ class FinanceRepository {
 
   async upsertPaymentMethod({ workspaceId, accountId, payload }) {
     const methodsRef = db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('accounts')
       .doc(accountId)
@@ -624,7 +651,7 @@ class FinanceRepository {
     idempotencyScopeDate,
     action
   }) {
-    const workspaceRef = db.collection('workspaces').doc(workspaceId);
+    const workspaceRef = db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId);
     const idempotencyRef = workspaceRef.collection('idempotencyKeys').doc(idempotencyHash);
     const movementRef = workspaceRef.collection('movements').doc();
     const accountRefs = accountDeltas.map((delta) => workspaceRef.collection('accounts').doc(delta.accountId));
@@ -692,7 +719,7 @@ class FinanceRepository {
 
   async listMovements({ workspaceId, filters, cursor = null, limit }) {
     let query = db
-      .collection('workspaces')
+      .collection(FINANCE_WORKSPACES_COLLECTION)
       .doc(workspaceId)
       .collection('movements')
       .where('date', '>=', filters.startDate)

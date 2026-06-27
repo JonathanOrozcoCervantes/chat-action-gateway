@@ -1,13 +1,13 @@
 # Chat Action Gateway
 
-Gateway web para que ChatGPT use un servidor MCP y registre acciones en Firestore para el usuario autenticado.
+Gateway web para que ChatGPT use servidores MCP por dominio y registre acciones en Firestore para el usuario autenticado.
 
 ## Stack
 
 - React + Vite para la pagina publica de estado.
 - Firebase Hosting para servir el frontend.
 - Firebase Functions 2nd gen (`apiV2`) con Express.
-- Firestore para usuarios, workspaces, cuentas, metodos de pago, movimientos, idempotencia, logs y codigos OAuth temporales.
+- Firestore para usuarios, workspaces financieros, cuentas, metodos de pago, movimientos, idempotencia, logs y codigos OAuth temporales.
 - Firebase Authentication con Google para identificar al usuario.
 - Firebase App Check en la API HTTP normal consumida por el frontend.
 
@@ -107,7 +107,7 @@ La misma Function `apiV2` sirve el servidor MCP:
 https://chat-action-gateway.web.app/mcp/finance
 ```
 
-El MCP usa OAuth con Google Sign-In. Cuando ChatGPT necesita autorizar el conector, abre `/oauth/authorize`; la Function redirige al frontend `/oauth-login`, ahi el usuario inicia sesion con Google. El backend verifica el ID token de Firebase Auth, crea o actualiza `users/{firebaseUid}`, crea un workspace personal si el usuario aun no tiene workspaces y emite el authorization code para ChatGPT.
+El MCP usa OAuth con Google Sign-In. Cuando ChatGPT necesita autorizar el conector, abre `/oauth/authorize`; la Function redirige al frontend `/oauth-login`, ahi el usuario inicia sesion con Google. El backend verifica el ID token de Firebase Auth, crea o actualiza `users/{firebaseUid}`, crea un workspace financiero personal si el usuario aun no tiene workspaces de finanzas y emite el authorization code para ChatGPT.
 
 OAuth solo identifica al usuario y emite access tokens con scopes soportados por el MCP:
 
@@ -130,7 +130,7 @@ OAuth solo identifica al usuario y emite access tokens con scopes soportados por
 ]
 ```
 
-Los permisos reales viven en `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes`. Cada tool valida esos scopes del miembro antes de leer o escribir datos del workspace. Para bloquear el acceso de un usuario a un workspace puedes dejar ese array vacio o cambiar `status` a `inactive`.
+Los permisos reales viven en `financeWorkspaces/{workspaceId}/members/{firebaseUid}.grantedScopes`. Cada tool valida esos scopes del miembro antes de leer o escribir datos del workspace financiero. Para bloquear el acceso de un usuario a un workspace puedes dejar ese array vacio o cambiar `status` a `inactive`.
 
 Rutas OAuth publicadas:
 
@@ -189,19 +189,19 @@ Las reglas se administran desde la consola de Firebase. La Function escribe con 
 Colecciones actuales:
 
 - `users/{firebaseUid}`
-- `workspaces/{workspaceId}`
-- `workspaces/{workspaceId}/members/{firebaseUid}`
-- `workspaces/{workspaceId}/categories/{categoryId}`
-- `workspaces/{workspaceId}/accounts/{accountId}`
-- `workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}`
-- `workspaces/{workspaceId}/movements/{movementId}`
-- `workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}`
+- `financeWorkspaces/{workspaceId}`
+- `financeWorkspaces/{workspaceId}/members/{firebaseUid}`
+- `financeWorkspaces/{workspaceId}/categories/{categoryId}`
+- `financeWorkspaces/{workspaceId}/accounts/{accountId}`
+- `financeWorkspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}`
+- `financeWorkspaces/{workspaceId}/movements/{movementId}`
+- `financeWorkspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}`
 - `actionLogs/{logId}`
 - `oauthAuthorizationCodes/{codeHash}`
 
-`users/{firebaseUid}` mantiene `workspaces` y `defaultWorkspaceId` para ubicar los espacios del usuario. `workspaces/{workspaceId}/members/{firebaseUid}` guarda `role`, `status` y `grantedScopes` para controlar que puede hacer cada miembro dentro de ese workspace. Los usuarios solo pueden usar las tools cuyos scopes existan en su documento de miembro. Los owners nuevos se crean con todos los scopes en su documento `members/{firebaseUid}`.
+`users/{firebaseUid}` mantiene `profiles.finance.workspaceIds` y `profiles.finance.defaultWorkspaceId` para ubicar los workspaces financieros del usuario. `financeWorkspaces/{workspaceId}/members/{firebaseUid}` guarda `role`, `status` y `grantedScopes` para controlar que puede hacer cada miembro dentro de ese workspace. Los usuarios solo pueden usar las tools cuyos scopes existan en su documento de miembro. Los owners nuevos se crean con todos los scopes en su documento `members/{firebaseUid}`.
 
-`workspaces/{workspaceId}/categories/{categoryId}` guarda categorias reutilizables con `name`, `normalizedName`, `type` (`expense`, `income`, `both`), `description` y `active`. Los movimientos guardan `categoryId`, `categoryName` y `category` para mantener referencia al catalogo y lectura simple.
+`financeWorkspaces/{workspaceId}/categories/{categoryId}` guarda categorias reutilizables con `name`, `normalizedName`, `type` (`expense`, `income`, `both`), `description` y `active`. Los movimientos guardan `categoryId`, `categoryName` y `category` para mantener referencia al catalogo y lectura simple.
 
 Para agregar miembros con `add_workspace_member`, la persona ya debe haber iniciado sesion una vez con Google en este MCP. La tool puede buscarla por `memberEmail` o por `memberUserId`. Si no existe, la tool devuelve `member_user_not_found` para que el agente le indique que primero conecte el MCP con Google.
 
@@ -249,5 +249,5 @@ idempotencyHash = SHA-256(action + movement.date + idempotencyKey)
 Luego lo guarda como ID seguro en:
 
 ```txt
-workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
+financeWorkspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
 ```

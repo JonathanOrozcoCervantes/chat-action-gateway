@@ -2,7 +2,7 @@
 
 ## Resumen del proyecto
 
-Chat Action Gateway es un puente entre ChatGPT y sistemas internos propios. El proyecto expone un servidor MCP que ChatGPT puede conectar mediante OAuth, autentica a cada persona con Google/Firebase Auth y registra acciones financieras en Firestore bajo el workspace correcto.
+Chat Action Gateway es un puente entre ChatGPT y sistemas internos propios. El proyecto expone servidores MCP por dominio que ChatGPT puede conectar mediante OAuth, autentica a cada persona con Google/Firebase Auth y registra acciones financieras en Firestore bajo el workspace correcto.
 
 La etapa actual es Finanzas personales pro. El modelo debe permitir crecer despues a microempresarios con facturas, clientes, proveedores, ventas y compras sin reorganizar las colecciones principales.
 
@@ -10,19 +10,19 @@ La etapa actual es Finanzas personales pro. El modelo debe permitir crecer despu
 
 El flujo principal ya no usa enlaces `/action/...` con `token` por URL. El modelo actual es:
 
-1. ChatGPT conecta el servidor MCP.
+1. ChatGPT conecta el servidor MCP de finanzas.
 2. ChatGPT inicia el flujo OAuth en `/oauth/authorize`.
 3. La Function redirige al frontend `/oauth-login`.
 4. El usuario inicia sesion con Google.
 5. Firebase Authentication entrega un ID token.
 6. La Function verifica el ID token con Admin SDK.
 7. Se crea o actualiza `users/{firebaseUid}`.
-8. Si el usuario no tiene workspaces, se crea un workspace personal.
+8. Si el usuario no tiene workspaces de finanzas, se crea un workspace financiero personal.
 9. El backend valida que los scopes solicitados existan en la lista soportada por el MCP.
 10. ChatGPT recibe un access token OAuth con los scopes concedidos.
 11. Cada request MCP usa `Authorization: Bearer <access_token>`.
 12. Cada request MCP valida que la version del token coincida con `users/{firebaseUid}.oauthTokenVersion`.
-13. Cada tool valida el scope especifico contra `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` y escribe o consulta en el workspace correcto.
+13. Cada tool valida el scope especifico contra `financeWorkspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` y escribe o consulta en el workspace correcto.
 
 Este modelo permite que muchas personas usen el mismo MCP sin mezclar registros.
 
@@ -30,13 +30,13 @@ Este modelo permite que muchas personas usen el mismo MCP sin mezclar registros.
 
 ```txt
 users/{firebaseUid}
-workspaces/{workspaceId}
-workspaces/{workspaceId}/members/{firebaseUid}
-workspaces/{workspaceId}/categories/{categoryId}
-workspaces/{workspaceId}/accounts/{accountId}
-workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
-workspaces/{workspaceId}/movements/{movementId}
-workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
+financeWorkspaces/{workspaceId}
+financeWorkspaces/{workspaceId}/members/{firebaseUid}
+financeWorkspaces/{workspaceId}/categories/{categoryId}
+financeWorkspaces/{workspaceId}/accounts/{accountId}
+financeWorkspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
+financeWorkspaces/{workspaceId}/movements/{movementId}
+financeWorkspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
 actionLogs/{logId}
 oauthAuthorizationCodes/{codeHash}
 ```
@@ -44,14 +44,14 @@ oauthAuthorizationCodes/{codeHash}
 `users/{firebaseUid}` usa el UID real de Firebase Authentication como ID del documento. Tambien mantiene:
 
 ```txt
-workspaces
-defaultWorkspaceId
+profiles.finance.workspaceIds
+profiles.finance.defaultWorkspaceId
 oauthTokenVersion
 ```
 
 `oauthTokenVersion` se incrementa cada vez que ChatGPT intercambia un authorization code por un access token. El JWT emitido incluye esa version; si el usuario vuelve a autenticar el MCP, los tokens anteriores dejan de coincidir y quedan invalidados.
 
-`workspaces/{workspaceId}/members/{firebaseUid}` queda como base para roles y permisos por workspace.
+`financeWorkspaces/{workspaceId}/members/{firebaseUid}` queda como base para roles y permisos por workspace.
 
 ## Scopes OAuth
 
@@ -74,7 +74,7 @@ income:write
 transfers:write
 ```
 
-El access token OAuth solo incluye scopes que hayan sido solicitados por ChatGPT y que existan en la lista soportada por el MCP. OAuth no decide permisos sobre datos de workspace; cada tool valida el scope especifico dentro de `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes`.
+El access token OAuth solo incluye scopes que hayan sido solicitados por ChatGPT y que existan en la lista soportada por el MCP. OAuth no decide permisos sobre datos de workspace; cada tool valida el scope especifico dentro de `financeWorkspaces/{workspaceId}/members/{firebaseUid}.grantedScopes`.
 
 ## Finanzas personales pro
 
@@ -137,7 +137,7 @@ Si `hasMore` es `true`, el agente debe explicar que hay mas movimientos disponib
 Los miembros viven en:
 
 ```txt
-workspaces/{workspaceId}/members/{firebaseUid}
+financeWorkspaces/{workspaceId}/members/{firebaseUid}
 ```
 
 Cada miembro guarda:
@@ -148,7 +148,7 @@ status
 grantedScopes
 ```
 
-`workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` controla lo que ese usuario puede hacer en ese workspace. Para bloquear a un usuario en un workspace se puede dejar ese array vacio o marcar el miembro como `inactive`.
+`financeWorkspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` controla lo que ese usuario puede hacer en ese workspace. Para bloquear a un usuario en un workspace se puede dejar ese array vacio o marcar el miembro como `inactive`.
 
 Para agregar miembros:
 
@@ -156,7 +156,7 @@ Para agregar miembros:
 2. El owner o administrador llama `add_workspace_member`.
 3. Se indica `memberEmail` o `memberUserId`.
 4. Se indica `role`: `viewer`, `member` o `admin`.
-5. La tool convierte ese rol a `grantedScopes`, actualiza `workspaces/{workspaceId}/members/{firebaseUid}` y agrega el workspace en `users/{firebaseUid}.workspaces`.
+5. La tool convierte ese rol a `grantedScopes`, actualiza `financeWorkspaces/{workspaceId}/members/{firebaseUid}` y agrega el workspace en `users/{firebaseUid}.profiles.finance.workspaceIds`.
 
 Roles:
 
@@ -171,7 +171,7 @@ admin -> todas las tools del workspace, incluyendo administracion de miembros
 Las categorias son catalogo controlado por workspace:
 
 ```txt
-workspaces/{workspaceId}/categories/{categoryId}
+financeWorkspaces/{workspaceId}/categories/{categoryId}
 ```
 
 Campos principales:
@@ -211,7 +211,7 @@ other
 Los metodos de pago son subcolecciones dentro de cuentas:
 
 ```txt
-workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
+financeWorkspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
 ```
 
 Tipos iniciales:
@@ -233,7 +233,7 @@ Si el usuario dice "saque $1,000 del cajero de BBVA", el agente debe modelarlo c
 Todos los registros financieros viven en:
 
 ```txt
-workspaces/{workspaceId}/movements/{movementId}
+financeWorkspaces/{workspaceId}/movements/{movementId}
 ```
 
 Tipos:
@@ -326,7 +326,7 @@ idempotencyHash = SHA-256(action + movement.date + idempotencyKey)
 Y lo guarda en:
 
 ```txt
-workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
+financeWorkspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}
 ```
 
 Si ya existe, se rechaza la accion como duplicada.
