@@ -31,6 +31,7 @@ Este modelo permite que muchas personas usen el mismo MCP sin mezclar registros.
 users/{firebaseUid}
 workspaces/{workspaceId}
 workspaces/{workspaceId}/members/{firebaseUid}
+workspaces/{workspaceId}/categories/{categoryId}
 workspaces/{workspaceId}/accounts/{accountId}
 workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
 workspaces/{workspaceId}/movements/{movementId}
@@ -57,6 +58,8 @@ workspaces:read
 workspaces:write
 members:read
 members:write
+categories:read
+categories:write
 accounts:read
 accounts:write
 payment_methods:read
@@ -79,9 +82,20 @@ La etapa 1 permite:
 - Consultar movimientos por rango de tiempo.
 - Manejar workspaces.
 - Manejar miembros y permisos por workspace.
+- Manejar categorias controladas por workspace.
 - Manejar cuentas.
 - Manejar metodos de pago dentro de cuentas.
 - Ajustar saldos con movimiento de auditoria.
+
+Tipos de workspace:
+
+```txt
+personal
+household
+business
+```
+
+`personal` es para finanzas individuales, `household` para casa/familia/pareja con finanzas compartidas y `business` para negocio o microempresa.
 
 ## Tools MCP
 
@@ -90,6 +104,8 @@ create_workspace
 list_workspaces
 add_workspace_member
 list_workspace_members
+list_categories
+upsert_category
 upsert_account
 list_accounts
 upsert_payment_method
@@ -126,10 +142,44 @@ Para agregar miembros:
 1. La persona debe haber conectado el MCP con Google al menos una vez para existir como `users/{firebaseUid}`.
 2. El owner o administrador llama `add_workspace_member`.
 3. Se indica `memberEmail` o `memberUserId`.
-4. Se indica `accessLevel` (`read`, `write`, `read_write`) o `scopes` exactos con `accessLevel=custom`.
-5. La tool actualiza `workspaces/{workspaceId}/members/{firebaseUid}` y agrega el workspace en `users/{firebaseUid}.workspaces`.
+4. Se indica `role`: `viewer`, `member` o `admin`.
+5. La tool convierte ese rol a `grantedScopes`, actualiza `workspaces/{workspaceId}/members/{firebaseUid}` y agrega el workspace en `users/{firebaseUid}.workspaces`.
 
-`read_write` concede lectura financiera y escritura financiera comun, pero no concede `members:write`. Para permitir que un miembro administre miembros se debe incluir explicitamente `members:read` y `members:write` en `scopes`.
+Roles:
+
+```txt
+viewer -> solo lectura
+member -> lectura y escritura financiera, sin administrar miembros
+admin -> todas las tools del workspace, incluyendo administracion de miembros
+```
+
+## Categorias
+
+Las categorias son catalogo controlado por workspace:
+
+```txt
+workspaces/{workspaceId}/categories/{categoryId}
+```
+
+Campos principales:
+
+```txt
+name
+normalizedName
+type
+description
+active
+```
+
+Tipos iniciales:
+
+```txt
+expense
+income
+both
+```
+
+El agente no debe inventar categorias al registrar gastos o ingresos. Debe usar `categoryId` o `categoryName` de una categoria existente. Si la categoria no existe, debe llamar `list_categories`, mostrar opciones al usuario y preguntar si quiere crear una categoria nueva con `upsert_category`.
 
 ## Cuentas y metodos de pago
 
@@ -201,12 +251,13 @@ Cada movimiento guarda `amountMinor` para evitar errores decimales y `amount` pa
 Antes de llamar una tool de escritura, ChatGPT debe:
 
 1. Extraer datos del mensaje, ticket o recibo del usuario.
-2. Identificar workspace, cuenta y metodo de pago cuando aplique.
+2. Identificar workspace, categoria, cuenta y metodo de pago cuando aplique.
 3. Llamar tools de listado si necesita resolver IDs.
-4. Si la cuenta no existe, preguntar al usuario los datos de configuracion antes de crearla: nombre, tipo, moneda, institucion si aplica y saldo actual.
-5. Preguntar al usuario por campos requeridos que falten o sean ambiguos.
-6. Dar un resumen breve de lo que se va a registrar.
-7. Llamar la tool de escritura solo cuando tenga datos suficientes.
+4. Si la categoria no existe, pedir confirmacion antes de crearla con `upsert_category`.
+5. Si la cuenta no existe, preguntar al usuario los datos de configuracion antes de crearla: nombre, tipo, moneda, institucion si aplica y saldo actual.
+6. Preguntar al usuario por campos requeridos que falten o sean ambiguos.
+7. Dar un resumen breve de lo que se va a registrar.
+8. Llamar la tool de escritura solo cuando tenga datos suficientes.
 
 Ejemplo de resumen:
 
@@ -232,6 +283,8 @@ Ejemplos:
 ```txt
 workspace_required -> llamar list_workspaces y pedir al usuario que elija.
 account_required -> llamar list_accounts o crear cuenta con upsert_account.
+category_required -> llamar list_categories y pedir al usuario que elija o confirme crear categoria.
+category_not_found -> listar categorias y pedir usar una existente o crear una nueva con upsert_category.
 initial_balance_required -> preguntar saldo actual de la nueva cuenta antes de crearla.
 payment_method_not_found -> llamar list_payment_methods o crear metodo con upsert_payment_method.
 ambiguous_account -> mostrar coincidencias y pedir al usuario que elija.
@@ -241,10 +294,20 @@ workspace_scope_denied -> avisar que el usuario no tiene permiso en ese workspac
 
 ## Idempotencia
 
-Cada escritura financiera acepta `idempotencyKey`. Si el agente no lo envia, el MCP genera uno. El backend calcula:
+Cada tool MCP de escritura financiera pide `idempotencyKey`. El agente debe generar una clave nueva por cada movimiento real, usando accion, fecha del movimiento, un resumen compacto y un sufijo aleatorio o de tiempo. Ejemplos:
 
 ```txt
-idempotencyHash = SHA-256(idempotencyKey)
+expense:2026-06-26:oxxo-cafe:8f3a21
+income:2026-06-26:sueldo:1720
+transfer:2026-06-26:bbva-a-efectivo:9c41
+```
+
+La misma clave solo debe reutilizarse al reintentar exactamente la misma llamada por una falla tecnica. Para otro movimiento real, incluso si se parece, debe generar otra clave.
+
+El backend acota la unicidad por accion y fecha del movimiento:
+
+```txt
+idempotencyHash = SHA-256(action + movement.date + idempotencyKey)
 ```
 
 Y lo guarda en:

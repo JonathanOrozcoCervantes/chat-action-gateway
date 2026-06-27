@@ -104,6 +104,8 @@ OAuth solo identifica al usuario y emite access tokens con scopes soportados por
   "workspaces:write",
   "members:read",
   "members:write",
+  "categories:read",
+  "categories:write",
   "accounts:read",
   "accounts:write",
   "payment_methods:read",
@@ -137,14 +139,16 @@ Configuracion manual en ChatGPT, si la deteccion automatica no llena todo:
 - Token URL: `https://chat-action-gateway.web.app/oauth/token`
 - Registration URL: `https://chat-action-gateway.web.app/oauth/register`
 - Resource: `https://chat-action-gateway.web.app/mcp`
-- Scopes: `workspaces:read workspaces:write members:read members:write accounts:read accounts:write payment_methods:read payment_methods:write movements:read expenses:write income:write transfers:write`
+- Scopes: `workspaces:read workspaces:write members:read members:write categories:read categories:write accounts:read accounts:write payment_methods:read payment_methods:write movements:read expenses:write income:write transfers:write`
 
 Tools disponibles:
 
-- `create_workspace`: crea un workspace personal o de negocio.
+- `create_workspace`: crea un workspace `personal`, `household` o `business`.
 - `list_workspaces`: lista los workspaces disponibles para elegir `workspaceId`.
-- `add_workspace_member`: agrega o actualiza un miembro existente del MCP en un workspace y define sus scopes por workspace.
+- `add_workspace_member`: agrega o actualiza un miembro existente del MCP en un workspace y define su rol.
 - `list_workspace_members`: lista miembros de un workspace y sus scopes.
+- `list_categories`: lista categorias disponibles del workspace.
+- `upsert_category`: crea o actualiza una categoria controlada del workspace.
 - `upsert_account`: crea o actualiza una cuenta como BBVA, Mercado Pago o Efectivo.
 - `list_accounts`: lista cuentas de un workspace.
 - `upsert_payment_method`: crea o actualiza un metodo de pago dentro de una cuenta.
@@ -161,6 +165,8 @@ Las tools devuelven errores estructurados para agentes con `code`, `message`, `a
 
 Las cuentas nuevas requieren saldo actual explicito. Si el agente intenta crear una cuenta sin `balance`, la tool devuelve `initial_balance_required` para que pregunte al usuario el saldo actual, o confirme que quiere iniciar en `0`.
 
+Las categorias de gastos e ingresos son catalogo controlado por workspace, no texto libre improvisado en cada movimiento. Antes de registrar un gasto o ingreso, el agente debe usar una categoria existente por `categoryId` o `categoryName`. Si no existe, debe llamar `list_categories`, preguntar al usuario si quiere usar una existente o crear una nueva, y solo llamar `upsert_category` cuando el usuario confirme.
+
 ## Firestore
 
 Las reglas se administran desde la consola de Firebase. La Function escribe con Admin SDK.
@@ -170,6 +176,7 @@ Colecciones actuales:
 - `users/{firebaseUid}`
 - `workspaces/{workspaceId}`
 - `workspaces/{workspaceId}/members/{firebaseUid}`
+- `workspaces/{workspaceId}/categories/{categoryId}`
 - `workspaces/{workspaceId}/accounts/{accountId}`
 - `workspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}`
 - `workspaces/{workspaceId}/movements/{movementId}`
@@ -179,7 +186,15 @@ Colecciones actuales:
 
 `users/{firebaseUid}` mantiene `workspaces` y `defaultWorkspaceId` para ubicar los espacios del usuario. `workspaces/{workspaceId}/members/{firebaseUid}` guarda `role`, `status` y `grantedScopes` para controlar que puede hacer cada miembro dentro de ese workspace. Los usuarios solo pueden usar las tools cuyos scopes existan en su documento de miembro. Los owners nuevos se crean con todos los scopes en su documento `members/{firebaseUid}`.
 
+`workspaces/{workspaceId}/categories/{categoryId}` guarda categorias reutilizables con `name`, `normalizedName`, `type` (`expense`, `income`, `both`), `description` y `active`. Los movimientos guardan `categoryId`, `categoryName` y `category` para mantener referencia al catalogo y lectura simple.
+
 Para agregar miembros con `add_workspace_member`, la persona ya debe haber iniciado sesion una vez con Google en este MCP. La tool puede buscarla por `memberEmail` o por `memberUserId`. Si no existe, la tool devuelve `member_user_not_found` para que el agente le indique que primero conecte el MCP con Google.
+
+Roles de miembros:
+
+- `viewer`: solo lectura.
+- `member`: lectura y escritura financiera, sin administrar miembros.
+- `admin`: todas las tools del workspace, incluyendo administracion de miembros.
 
 Los movimientos viven en una coleccion unificada con `type`:
 
@@ -201,7 +216,22 @@ Despues de desplegar y probar el login nuevo, esas colecciones antiguas se puede
 
 ## Idempotencia
 
-Cada escritura financiera acepta `idempotencyKey`. Si no se envia, el MCP genera uno. La Function lo normaliza a `idempotencyHash` para usarlo como ID seguro en:
+Cada tool MCP de escritura financiera pide `idempotencyKey`. El agente debe generar una clave nueva para cada movimiento real, con formato estable y unico para esa intencion de escritura, por ejemplo:
+
+```txt
+expense:2026-06-26:oxxo-cafe:8f3a21
+transfer:2026-06-26:bbva-a-mercado-pago:1720
+```
+
+La misma clave solo debe reutilizarse al reintentar exactamente la misma llamada por una falla tecnica. Para otro movimiento real, incluso si se parece en monto, comercio, cuenta y fecha, se debe generar otra clave.
+
+La Function calcula el hash usando accion, fecha del movimiento e `idempotencyKey`:
+
+```txt
+idempotencyHash = SHA-256(action + movement.date + idempotencyKey)
+```
+
+Luego lo guarda como ID seguro en:
 
 ```txt
 workspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}

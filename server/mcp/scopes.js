@@ -3,6 +3,8 @@ const FINANCE_SCOPES = [
   'workspaces:write',
   'members:read',
   'members:write',
+  'categories:read',
+  'categories:write',
   'accounts:read',
   'accounts:write',
   'payment_methods:read',
@@ -16,6 +18,7 @@ const FINANCE_SCOPES = [
 const READ_SCOPES = [
   'workspaces:read',
   'members:read',
+  'categories:read',
   'accounts:read',
   'payment_methods:read',
   'movements:read'
@@ -23,6 +26,7 @@ const READ_SCOPES = [
 
 const WRITE_SCOPES = [
   'accounts:write',
+  'categories:write',
   'payment_methods:write',
   'expenses:write',
   'income:write',

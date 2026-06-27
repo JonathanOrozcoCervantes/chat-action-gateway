@@ -8,10 +8,12 @@ const {
   validateCreateTransferPayload,
   validateCreateWorkspacePayload,
   validateAddWorkspaceMemberPayload,
+  validateListCategoriesPayload,
   validateListMovementsPayload,
   validateListWorkspaceMembersPayload,
   validateSetAccountBalancePayload,
   validateUpsertAccountPayload,
+  validateUpsertCategoryPayload,
   validateUpsertPaymentMethodPayload
 } = require('../validators/financeValidator');
 const { createAgentError } = require('../utils/agentError');
@@ -85,6 +87,8 @@ const summarizeMovementForResponse = (movement) => ({
   amountMinor: movement.amountMinor,
   currency: movement.currency,
   category: movement.category,
+  categoryId: movement.categoryId || '',
+  categoryName: movement.categoryName || movement.category || '',
   description: movement.description,
   merchant: movement.merchant || '',
   sourceName: movement.sourceName || '',
@@ -366,6 +370,128 @@ class FinanceService {
     return matches[0];
   }
 
+  isCategoryCompatible(category, movementType) {
+    return category.type === 'both' || category.type === movementType;
+  }
+
+  categoryAgentAction({ movementType, categoryName = '' }) {
+    const createPhrase = categoryName ? `create category "${categoryName}"` : 'create a new category';
+
+    return `Call list_categories filtered by type=${movementType}, show the available categories to the user, and ask whether to use one of them or ${createPhrase} with upsert_category. Only retry the movement after the user confirms the category.`;
+  }
+
+  async resolveCategory({
+    workspaceId,
+    categoryId = '',
+    categoryName = '',
+    movementType
+  }) {
+    if (categoryId) {
+      const category = await financeRepository.getCategory({ workspaceId, categoryId });
+
+      if (!category || category.active === false) {
+        throw createAgentError({
+          code: 'category_not_found',
+          message: 'The provided categoryId does not exist in this workspace.',
+          agentAction: this.categoryAgentAction({ movementType }),
+          suggestedTool: 'list_categories',
+          details: {
+            workspaceId,
+            categoryId,
+            requiredType: movementType
+          }
+        });
+      }
+
+      if (!this.isCategoryCompatible(category, movementType)) {
+        throw createAgentError({
+          code: 'category_type_mismatch',
+          message: `Category "${category.name}" is type ${category.type}, but this movement requires ${movementType}.`,
+          agentAction: this.categoryAgentAction({ movementType, categoryName: category.name }),
+          suggestedTool: 'list_categories',
+          details: {
+            workspaceId,
+            category,
+            requiredType: movementType
+          }
+        });
+      }
+
+      return category;
+    }
+
+    if (!categoryName) {
+      throw createAgentError({
+        code: 'category_required',
+        message: 'categoryId or categoryName is required.',
+        agentAction: this.categoryAgentAction({ movementType }),
+        missingFields: ['categoryId', 'categoryName'],
+        suggestedTool: 'list_categories',
+        details: {
+          workspaceId,
+          requiredType: movementType
+        }
+      });
+    }
+
+    const matches = await financeRepository.findCategoriesByNormalizedName({
+      workspaceId,
+      normalizedName: normalizeLookupName(categoryName)
+    });
+
+    if (!matches.length) {
+      throw createAgentError({
+        code: 'category_not_found',
+        message: `No category matches "${categoryName}" in this workspace.`,
+        agentAction: this.categoryAgentAction({ movementType, categoryName }),
+        suggestedTool: 'list_categories',
+        details: {
+          workspaceId,
+          categoryName,
+          requiredType: movementType,
+          suggestedCreatePayload: {
+            name: categoryName,
+            type: movementType
+          }
+        }
+      });
+    }
+
+    const compatibleMatches = matches.filter((category) => this.isCategoryCompatible(category, movementType));
+
+    if (!compatibleMatches.length) {
+      throw createAgentError({
+        code: 'category_type_mismatch',
+        message: `Category "${categoryName}" exists, but not for ${movementType} movements.`,
+        agentAction: `Ask the user whether to update that category to type=both with upsert_category, or choose/create another ${movementType} category. Do not retry the movement until the user confirms.`,
+        suggestedTool: 'list_categories',
+        details: {
+          workspaceId,
+          categoryName,
+          requiredType: movementType,
+          matches
+        }
+      });
+    }
+
+    if (compatibleMatches.length > 1) {
+      throw createAgentError({
+        code: 'ambiguous_category',
+        message: `More than one category matches "${categoryName}".`,
+        agentAction: 'Show the matching categories to the user and ask which one they mean. Retry with categoryId.',
+        suggestedTool: 'list_categories',
+        details: {
+          workspaceId,
+          categoryName,
+          requiredType: movementType,
+          matches: compatibleMatches.map(({ categoryId: id, name, type }) => ({ categoryId: id, name, type }))
+        }
+      });
+    }
+
+    return compatibleMatches[0];
+  }
+
   async createWorkspace({ userId, authContext, payload }) {
     ensureScope(authContext, 'workspaces:write');
     const normalizedPayload = validateCreateWorkspacePayload(payload);
@@ -508,6 +634,89 @@ class FinanceService {
       },
       count: members.length,
       members
+    };
+  }
+
+  async upsertCategory({ userId, authContext, payload }) {
+    ensureScope(authContext, 'categories:write');
+    const normalizedPayload = validateUpsertCategoryPayload(payload);
+    const workspace = await this.resolveWorkspace({
+      userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'categories:write',
+      suggestedTool: 'list_categories'
+    });
+
+    if (normalizedPayload.categoryId) {
+      const existingCategory = await financeRepository.getCategory({
+        workspaceId: workspace.workspaceId,
+        categoryId: normalizedPayload.categoryId
+      });
+
+      if (!existingCategory) {
+        throw createAgentError({
+          code: 'category_not_found',
+          message: 'The categoryId provided for update does not exist.',
+          agentAction: 'Call list_categories and ask the user which existing category to update. To create a new category, omit categoryId and provide name and type.',
+          suggestedTool: 'list_categories',
+          details: {
+            workspaceId: workspace.workspaceId,
+            categoryId: normalizedPayload.categoryId
+          }
+        });
+      }
+    }
+
+    const result = await financeRepository.upsertCategory({
+      workspaceId: workspace.workspaceId,
+      payload: normalizedPayload
+    });
+    const category = await financeRepository.getCategory({
+      workspaceId: workspace.workspaceId,
+      categoryId: result.categoryId
+    });
+
+    return {
+      ok: true,
+      action: 'upsert_category',
+      workspaceId: workspace.workspaceId,
+      categoryId: result.categoryId,
+      category
+    };
+  }
+
+  async listCategories({ userId, authContext, payload = {} }) {
+    ensureScope(authContext, 'categories:read');
+    const normalizedPayload = validateListCategoriesPayload(payload);
+    const workspace = await this.resolveWorkspace({
+      userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'categories:read'
+    });
+
+    const categories = await financeRepository.listCategories({
+      workspaceId: workspace.workspaceId,
+      type: normalizedPayload.type,
+      includeInactive: normalizedPayload.includeInactive
+    });
+
+    return {
+      ok: true,
+      action: 'list_categories',
+      workspaceId: workspace.workspaceId,
+      type: normalizedPayload.type,
+      count: categories.length,
+      categories
     };
   }
 
@@ -699,6 +908,12 @@ class FinanceService {
       paymentMethodId: normalizedPayload.paymentMethodId,
       paymentMethodName: normalizedPayload.paymentMethodName
     });
+    const category = await this.resolveCategory({
+      workspaceId: workspace.workspaceId,
+      categoryId: normalizedPayload.categoryId,
+      categoryName: normalizedPayload.categoryName,
+      movementType: 'expense'
+    });
 
     requireSameCurrency({
       expectedCurrency: normalizedPayload.currency,
@@ -715,7 +930,10 @@ class FinanceService {
       amount: normalizedPayload.amount,
       currency: normalizedPayload.currency,
       date: normalizedPayload.date,
-      category: normalizedPayload.category,
+      category: category.name,
+      categoryId: category.categoryId,
+      categoryName: category.name,
+      categoryType: category.type,
       merchant: normalizedPayload.merchant,
       description: normalizedPayload.description || normalizedPayload.merchant,
       notes: normalizedPayload.notes,
@@ -769,6 +987,12 @@ class FinanceService {
       accountId: normalizedPayload.accountId,
       accountName: normalizedPayload.accountName
     });
+    const category = await this.resolveCategory({
+      workspaceId: workspace.workspaceId,
+      categoryId: normalizedPayload.categoryId,
+      categoryName: normalizedPayload.categoryName,
+      movementType: 'income'
+    });
 
     requireSameCurrency({
       expectedCurrency: normalizedPayload.currency,
@@ -785,9 +1009,12 @@ class FinanceService {
       amount: normalizedPayload.amount,
       currency: normalizedPayload.currency,
       date: normalizedPayload.date,
-      category: normalizedPayload.category,
+      category: category.name,
+      categoryId: category.categoryId,
+      categoryName: category.name,
+      categoryType: category.type,
       sourceName: normalizedPayload.sourceName || '',
-      description: normalizedPayload.description || normalizedPayload.sourceName || normalizedPayload.category,
+      description: normalizedPayload.description || normalizedPayload.sourceName || category.name,
       notes: normalizedPayload.notes,
       accountId: account.accountId,
       accountName: account.name,
@@ -997,12 +1224,14 @@ class FinanceService {
     accountDeltas,
     idempotencyKey
   }) {
-    const idempotencyHash = hashValue(idempotencyKey);
+    const idempotencyScopeDate = movement.date || '';
+    const idempotencyHash = hashValue(`${action}:${idempotencyScopeDate}:${idempotencyKey}`);
     const logBase = {
       action,
       workspaceId,
       userId,
       idempotencyHash,
+      idempotencyScopeDate,
       request: {
         ...summarizeMovementForResponse(movement),
         idempotencyKey
@@ -1017,6 +1246,7 @@ class FinanceService {
         accountDeltas,
         idempotencyKey,
         idempotencyHash,
+        idempotencyScopeDate,
         action
       });
       const affectedAccounts = await Promise.all(
@@ -1055,9 +1285,10 @@ class FinanceService {
           statusCode: 409,
           code: 'duplicate_action',
           message: 'A movement with this idempotencyKey already exists.',
-          agentAction: 'Do not retry with the same idempotencyKey. Tell the user the action appears to have already been recorded, or retry with a new idempotencyKey only if they confirm it is a different movement.',
+          agentAction: 'Do not retry with the same idempotencyKey for the same action and movement date. Tell the user the action appears to have already been recorded, or retry with a new idempotencyKey only if they confirm it is a different real-world movement.',
           details: {
             documentId: error.details?.documentId || null,
+            idempotencyScopeDate,
             idempotencyKey
           }
         });
@@ -1097,7 +1328,14 @@ class FinanceService {
         return false;
       }
 
-      if (normalizedPayload.category && normalizeLookupName(movement.category) !== normalizeLookupName(normalizedPayload.category)) {
+      if (normalizedPayload.categoryId && movement.categoryId !== normalizedPayload.categoryId) {
+        return false;
+      }
+
+      if (
+        normalizedPayload.categoryName
+        && normalizeLookupName(movement.categoryName || movement.category) !== normalizeLookupName(normalizedPayload.categoryName)
+      ) {
         return false;
       }
 

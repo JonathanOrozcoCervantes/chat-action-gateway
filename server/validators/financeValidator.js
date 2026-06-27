@@ -26,8 +26,15 @@ const PAYMENT_METHOD_TYPES = new Set([
   'other'
 ]);
 
+const CATEGORY_TYPES = new Set([
+  'expense',
+  'income',
+  'both'
+]);
+
 const WORKSPACE_TYPES = new Set([
   'personal',
+  'household',
   'business'
 ]);
 
@@ -35,13 +42,6 @@ const MEMBER_ROLES = new Set([
   'viewer',
   'member',
   'admin'
-]);
-
-const MEMBER_ACCESS_LEVELS = new Set([
-  'read',
-  'write',
-  'read_write',
-  'custom'
 ]);
 
 const MOVEMENT_TYPES = new Set([
@@ -111,6 +111,36 @@ const requireText = (payload, field, {
 
 const normalizeEnum = (payload, field, allowedValues, fallback, agentAction) => {
   const value = trimText(payload[field] || fallback).toLowerCase();
+
+  if (!allowedValues.has(value)) {
+    throw createAgentError({
+      code: 'invalid_field',
+      message: `${field} must be one of: ${Array.from(allowedValues).join(', ')}.`,
+      agentAction,
+      details: {
+        field,
+        allowedValues: Array.from(allowedValues)
+      }
+    });
+  }
+
+  return value;
+};
+
+const requireEnum = (payload, field, allowedValues, agentAction) => {
+  const value = trimText(payload[field]).toLowerCase();
+
+  if (!value) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: `${field} is required.`,
+      agentAction,
+      missingFields: [field],
+      details: {
+        allowedValues: Array.from(allowedValues)
+      }
+    });
+  }
 
   if (!allowedValues.has(value)) {
     throw createAgentError({
@@ -320,48 +350,16 @@ const normalizeEmail = (value) => {
   return email;
 };
 
-const normalizeScopeList = (scopes) => {
-  if (!Array.isArray(scopes)) {
-    return [];
-  }
-
-  const allowedScopes = new Set(FINANCE_SCOPES);
-  const normalizedScopes = Array.from(new Set(
-    scopes
-      .map((scope) => trimText(scope))
-      .filter(Boolean)
-  ));
-  const invalidScopes = normalizedScopes.filter((scope) => !allowedScopes.has(scope));
-
-  if (invalidScopes.length) {
-    throw createAgentError({
-      code: 'invalid_scope',
-      message: `Unsupported workspace member scope(s): ${invalidScopes.join(', ')}.`,
-      agentAction: 'Use only scopes returned in the tool description. If the user wants read/write access, use accessLevel instead of inventing scopes.',
-      details: {
-        invalidScopes,
-        allowedScopes: FINANCE_SCOPES
-      }
-    });
-  }
-
-  return normalizedScopes;
-};
-
-const scopesForAccessLevel = (accessLevel) => {
-  if (accessLevel === 'read') {
+const scopesForMemberRole = (role) => {
+  if (role === 'viewer') {
     return READ_SCOPES;
   }
 
-  if (accessLevel === 'write') {
-    return WRITE_SCOPES;
-  }
-
-  if (accessLevel === 'read_write') {
+  if (role === 'member') {
     return Array.from(new Set([...READ_SCOPES, ...WRITE_SCOPES]));
   }
 
-  return [];
+  return FINANCE_SCOPES;
 };
 
 const normalizeAccountSelector = (payload, prefix = '') => {
@@ -379,6 +377,11 @@ const normalizePaymentMethodSelector = (payload) => ({
   paymentMethodName: normalizeOptionalText(payload.paymentMethodName, 160, 'paymentMethodName')
 });
 
+const normalizeCategorySelector = (payload) => ({
+  categoryId: normalizeOptionalText(payload.categoryId, 120, 'categoryId'),
+  categoryName: normalizeOptionalText(payload.categoryName || payload.category, 80, 'categoryName')
+});
+
 const validateCreateWorkspacePayload = (payload = {}) => {
   const name = requireText(payload, 'name', {
     maxLength: 160,
@@ -388,7 +391,7 @@ const validateCreateWorkspacePayload = (payload = {}) => {
   return {
     name,
     normalizedName: normalizeLookupName(name),
-    type: normalizeEnum(payload, 'type', WORKSPACE_TYPES, 'personal', 'Ask whether this workspace is personal or business.'),
+    type: normalizeEnum(payload, 'type', WORKSPACE_TYPES, 'personal', 'Ask whether this workspace is personal, household, or business.'),
     currency: normalizeCurrency(payload.currency || DEFAULT_CURRENCY),
     description: normalizeOptionalText(payload.description, 500, 'description')
   };
@@ -397,17 +400,8 @@ const validateCreateWorkspacePayload = (payload = {}) => {
 const validateAddWorkspaceMemberPayload = (payload = {}) => {
   const memberUserId = normalizeOptionalText(payload.memberUserId, 120, 'memberUserId');
   const memberEmail = normalizeEmail(payload.memberEmail);
-  const accessLevel = normalizeEnum(
-    payload,
-    'accessLevel',
-    MEMBER_ACCESS_LEVELS,
-    'read_write',
-    'Use accessLevel read, write, read_write, or custom. For custom, provide explicit scopes.'
-  );
-  const explicitScopes = normalizeScopeList(payload.scopes);
-  const grantedScopes = explicitScopes.length
-    ? explicitScopes
-    : scopesForAccessLevel(accessLevel);
+  const role = normalizeEnum(payload, 'role', MEMBER_ROLES, 'member', 'Ask whether the member should be viewer, member, or admin.');
+  const grantedScopes = scopesForMemberRole(role);
 
   if (!memberUserId && !memberEmail) {
     throw createAgentError({
@@ -418,21 +412,11 @@ const validateAddWorkspaceMemberPayload = (payload = {}) => {
     });
   }
 
-  if (!grantedScopes.length) {
-    throw createAgentError({
-      code: 'missing_member_scopes',
-      message: 'At least one workspace member scope is required.',
-      agentAction: 'Ask whether the member should have read, write, or read/write access. For custom access, provide at least one scope.',
-      missingFields: ['scopes']
-    });
-  }
-
   return {
     workspaceId: normalizeWorkspaceId(payload),
     memberUserId,
     memberEmail,
-    role: normalizeEnum(payload, 'role', MEMBER_ROLES, 'member', 'Use role viewer, member, or admin. Permissions are still controlled by scopes.'),
-    accessLevel,
+    role,
     grantedScopes,
     notes: normalizeOptionalText(payload.notes, 500, 'notes')
   };
@@ -442,6 +426,50 @@ const validateListWorkspaceMembersPayload = (payload = {}) => ({
   workspaceId: normalizeWorkspaceId(payload),
   includeInactive: Boolean(payload.includeInactive)
 });
+
+const validateUpsertCategoryPayload = (payload = {}) => {
+  const name = requireText(payload, 'name', {
+    maxLength: 80,
+    agentAction: 'Ask the user for the category name before creating or updating it.'
+  });
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    categoryId: normalizeOptionalText(payload.categoryId, 120, 'categoryId'),
+    name,
+    normalizedName: normalizeLookupName(name),
+    type: requireEnum(
+      payload,
+      'type',
+      CATEGORY_TYPES,
+      'Ask whether this category is for expenses, income, or both before creating it.'
+    ),
+    description: normalizeOptionalText(payload.description, 500, 'description'),
+    active: payload.active === undefined ? true : Boolean(payload.active)
+  };
+};
+
+const validateListCategoriesPayload = (payload = {}) => {
+  const type = normalizeOptionalText(payload.type, 40, 'type').toLowerCase();
+
+  if (type && !CATEGORY_TYPES.has(type)) {
+    throw createAgentError({
+      code: 'invalid_field',
+      message: `type must be one of: ${Array.from(CATEGORY_TYPES).join(', ')}.`,
+      agentAction: 'Use type expense, income, both, or omit type to list all categories.',
+      details: {
+        field: 'type',
+        allowedValues: Array.from(CATEGORY_TYPES)
+      }
+    });
+  }
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    type,
+    includeInactive: Boolean(payload.includeInactive)
+  };
+};
 
 const validateUpsertAccountPayload = (payload = {}) => {
   const name = requireText(payload, 'name', {
@@ -495,17 +523,7 @@ const validateUpsertPaymentMethodPayload = (payload = {}) => {
   };
 };
 
-const normalizeMovementBase = (payload = {}, {
-  defaultCategory = '',
-  categoryRequired = true
-} = {}) => {
-  const category = categoryRequired
-    ? requireText(payload, 'category', {
-      maxLength: 80,
-      agentAction: 'Ask the user for the category before retrying this tool.'
-    })
-    : normalizeOptionalText(payload.category || defaultCategory, 80, 'category');
-
+const normalizeMovementBase = (payload = {}) => {
   const amountMinor = toMinorUnits(payload.amount, { field: 'amount' });
   const currency = normalizeCurrency(payload.currency || DEFAULT_CURRENCY);
 
@@ -515,7 +533,7 @@ const normalizeMovementBase = (payload = {}, {
     amount: fromMinorUnits(amountMinor),
     currency,
     date: validateDateString(payload.date, 'date'),
-    category,
+    ...normalizeCategorySelector(payload),
     description: normalizeOptionalText(payload.description, 260, 'description'),
     notes: normalizeOptionalText(payload.notes, 500, 'notes'),
     idempotencyKey: normalizeOptionalText(payload.idempotencyKey, 260, 'idempotencyKey')
@@ -539,10 +557,8 @@ const validateCreateIncomePayload = (payload = {}) => ({
 });
 
 const validateCreateTransferPayload = (payload = {}) => ({
-  ...normalizeMovementBase(payload, {
-    defaultCategory: 'transfer',
-    categoryRequired: false
-  }),
+  ...normalizeMovementBase(payload),
+  category: normalizeOptionalText(payload.category || 'transfer', 80, 'category'),
   fromAccountId: normalizeOptionalText(payload.fromAccountId, 120, 'fromAccountId'),
   fromAccountName: normalizeOptionalText(payload.fromAccountName, 160, 'fromAccountName'),
   toAccountId: normalizeOptionalText(payload.toAccountId, 120, 'toAccountId'),
@@ -576,7 +592,7 @@ const validateListMovementsPayload = (payload = {}) => {
     startDate: payload.startDate,
     endDate: payload.endDate
   }));
-  const type = normalizeOptionalText(payload.type, 40, 'type');
+  const type = normalizeOptionalText(payload.type, 40, 'type').toLowerCase();
 
   if (type && !MOVEMENT_TYPES.has(type)) {
     throw createAgentError({
@@ -600,7 +616,8 @@ const validateListMovementsPayload = (payload = {}) => {
     type,
     accountId: normalizeOptionalText(payload.accountId, 120, 'accountId'),
     accountName: normalizeOptionalText(payload.accountName, 160, 'accountName'),
-    category: normalizeOptionalText(payload.category, 80, 'category'),
+    categoryId: normalizeOptionalText(payload.categoryId, 120, 'categoryId'),
+    categoryName: normalizeOptionalText(payload.categoryName || payload.category, 80, 'categoryName'),
     limit
   };
 };
@@ -615,9 +632,11 @@ module.exports = {
   validateCreateIncomePayload,
   validateCreateTransferPayload,
   validateCreateWorkspacePayload,
+  validateListCategoriesPayload,
   validateListMovementsPayload,
   validateListWorkspaceMembersPayload,
   validateSetAccountBalancePayload,
   validateUpsertAccountPayload,
+  validateUpsertCategoryPayload,
   validateUpsertPaymentMethodPayload
 };

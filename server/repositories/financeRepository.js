@@ -339,6 +339,92 @@ class FinanceRepository {
     };
   }
 
+  async listCategories({ workspaceId, type = '', includeInactive = false }) {
+    const snapshot = await db
+      .collection('workspaces')
+      .doc(workspaceId)
+      .collection('categories')
+      .orderBy('name')
+      .get();
+
+    return snapshot.docs
+      .map(mapDocument)
+      .filter((category) => category && (includeInactive || category.active !== false))
+      .filter((category) => !type || category.type === type || category.type === 'both')
+      .map((category) => ({
+        ...category,
+        categoryId: category.id
+      }));
+  }
+
+  async getCategory({ workspaceId, categoryId }) {
+    const snapshot = await db
+      .collection('workspaces')
+      .doc(workspaceId)
+      .collection('categories')
+      .doc(categoryId)
+      .get();
+
+    const category = mapDocument(snapshot);
+
+    return category ? {
+      ...category,
+      categoryId: category.id
+    } : null;
+  }
+
+  async findCategoriesByNormalizedName({ workspaceId, normalizedName }) {
+    const snapshot = await db
+      .collection('workspaces')
+      .doc(workspaceId)
+      .collection('categories')
+      .where('normalizedName', '==', normalizedName)
+      .limit(10)
+      .get();
+
+    return snapshot.docs
+      .map(mapDocument)
+      .filter((category) => category && category.active !== false)
+      .map((category) => ({
+        ...category,
+        categoryId: category.id
+      }));
+  }
+
+  async upsertCategory({ workspaceId, payload }) {
+    const categoriesRef = db
+      .collection('workspaces')
+      .doc(workspaceId)
+      .collection('categories');
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    let categoryRef = payload.categoryId ? categoriesRef.doc(payload.categoryId) : null;
+    let isNewCategory = !payload.categoryId;
+
+    if (!categoryRef) {
+      const existing = await categoriesRef
+        .where('normalizedName', '==', payload.normalizedName)
+        .limit(1)
+        .get();
+
+      categoryRef = existing.empty ? categoriesRef.doc() : existing.docs[0].ref;
+      isNewCategory = existing.empty;
+    }
+
+    await categoryRef.set(cleanData({
+      name: payload.name,
+      normalizedName: payload.normalizedName,
+      type: payload.type,
+      description: payload.description,
+      active: payload.active,
+      updatedAt: now,
+      createdAt: isNewCategory ? now : undefined
+    }), { merge: true });
+
+    return {
+      categoryId: categoryRef.id
+    };
+  }
+
   async listAccounts(workspaceId) {
     const snapshot = await db
       .collection('workspaces')
@@ -535,6 +621,7 @@ class FinanceRepository {
     accountDeltas,
     idempotencyKey,
     idempotencyHash,
+    idempotencyScopeDate,
     action
   }) {
     const workspaceRef = db.collection('workspaces').doc(workspaceId);
@@ -552,7 +639,8 @@ class FinanceRepository {
           code: 'duplicate_action',
           message: 'A movement with this idempotencyKey already exists.',
           details: {
-            documentId: idempotencyData.documentId || null
+            documentId: idempotencyData.documentId || null,
+            idempotencyScopeDate: idempotencyData.idempotencyScopeDate || ''
           }
         });
       }
@@ -591,6 +679,7 @@ class FinanceRepository {
         action,
         documentId: movementRef.id,
         idempotencyKey,
+        idempotencyScopeDate,
         createdBy: userId,
         createdAt: now
       });
