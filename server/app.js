@@ -5,11 +5,29 @@ const apiRoutes = require('./routes/apiRoutes');
 const oauthRoutes = require('./oauth/oauthRoutes');
 const oauthController = require('./oauth/oauthController');
 const { handleMcpRequest } = require('./mcp/mcpHandler');
+const { FIREBASE_PROJECT_ID } = require('./config/settings');
 
 const app = express();
 
+const apiCorsOrigins = FIREBASE_PROJECT_ID ? new Set([
+  `https://${FIREBASE_PROJECT_ID}.web.app`,
+  `https://${FIREBASE_PROJECT_ID}.firebaseapp.com`
+]) : new Set();
+
+const apiCors = cors({
+  origin: (origin, callback) => {
+    if (!origin || apiCorsOrigins.has(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(null, false);
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck'],
+  maxAge: 3600
+});
+
 app.set('trust proxy', true);
-app.use(cors({ origin: true }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -21,7 +39,7 @@ app.use('/oauth', oauthRoutes);
 app.all('/mcp', handleMcpRequest);
 app.all('/mcp/*', handleMcpRequest);
 
-app.use('/api', apiRoutes);
+app.use('/api', apiCors, apiRoutes);
 
 app.use((req, res) => {
   res.status(404).json({
