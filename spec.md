@@ -119,6 +119,15 @@ list_movements
 
 Las tools de escritura actualizan saldos dentro de una transaccion Firestore y crean registros de idempotencia.
 
+`list_movements` devuelve una pagina de resultados. La respuesta incluye:
+
+```txt
+pagination.hasMore
+pagination.nextCursor
+```
+
+Si `hasMore` es `true`, el agente debe explicar que hay mas movimientos disponibles y preguntar si el usuario quiere ver la siguiente pagina. Para continuar, debe llamar `list_movements` con los mismos filtros y `cursor=nextCursor`.
+
 ## Miembros y permisos por workspace
 
 Los miembros viven en:

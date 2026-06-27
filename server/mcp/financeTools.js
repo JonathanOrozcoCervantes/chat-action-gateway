@@ -477,7 +477,7 @@ const registerFinanceTools = (server, { authContext }) => {
     name: 'list_movements',
     config: {
       title: 'List movements',
-      description: 'Lists financial movements for a workspace and date range. Use this for monthly, weekly, daily, annual, or custom queries. If workspaceId is missing and there are multiple workspaces, call list_workspaces first. Use accountId/accountName, type, categoryId, and categoryName filters when needed. Returns movements and summary totals.',
+      description: 'Lists one page of financial movements for a workspace and date range. Use this for monthly, weekly, daily, annual, or custom queries. If workspaceId is missing and there are multiple workspaces, call list_workspaces first. Use accountId/accountName, type, categoryId, and categoryName filters when needed. The response includes pagination.hasMore and pagination.nextCursor; if hasMore is true, tell the user there are more movements and ask whether they want to see the next page. To continue, call list_movements again with the same filters and cursor=nextCursor.',
       inputSchema: {
         ...workspaceIdInput,
         period: z.enum(['today', 'week', 'month', 'year', 'custom']).default('month').describe('Date period to query. For custom, provide startDate and endDate.'),
@@ -489,6 +489,7 @@ const registerFinanceTools = (server, { authContext }) => {
         accountName: optionalText(160),
         categoryId: optionalText(120).describe('Optional category ID filter for expense/income movements. Prefer IDs from list_categories.'),
         categoryName: optionalText(80).describe('Optional category name filter. This matches the stored categoryName/category label.'),
+        cursor: optionalText(1000).describe('Pagination cursor returned by the previous list_movements response as pagination.nextCursor. Omit for the first page.'),
         limit: z.number().int().min(1).max(100).default(50)
       },
       annotations: {
@@ -503,7 +504,9 @@ const registerFinanceTools = (server, { authContext }) => {
       authContext,
       payload: args
     }),
-    successText: (result) => `${result.count} movements found.`
+    successText: (result) => result.pagination?.hasMore
+      ? `${result.count} movements found. More movements are available; ask the user if they want to see the next page.`
+      : `${result.count} movements found. No more movements are available for these filters.`
   });
 };
 

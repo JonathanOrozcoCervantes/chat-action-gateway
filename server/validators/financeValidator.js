@@ -618,6 +618,7 @@ const validateListMovementsPayload = (payload = {}) => {
     accountName: normalizeOptionalText(payload.accountName, 160, 'accountName'),
     categoryId: normalizeOptionalText(payload.categoryId, 120, 'categoryId'),
     categoryName: normalizeOptionalText(payload.categoryName || payload.category, 80, 'categoryName'),
+    cursor: normalizeOptionalText(payload.cursor, 1000, 'cursor'),
     limit
   };
 };

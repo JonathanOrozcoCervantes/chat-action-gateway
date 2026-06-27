@@ -690,24 +690,45 @@ class FinanceRepository {
     });
   }
 
-  async listMovements({ workspaceId, filters }) {
-    const snapshot = await db
+  async listMovements({ workspaceId, filters, cursor = null, limit }) {
+    let query = db
       .collection('workspaces')
       .doc(workspaceId)
       .collection('movements')
       .where('date', '>=', filters.startDate)
       .where('date', '<=', filters.endDate)
       .orderBy('date', 'desc')
-      .limit(filters.limit)
-      .get();
+      .orderBy(admin.firestore.FieldPath.documentId(), 'desc');
 
-    return snapshot.docs
+    if (cursor?.date && cursor?.movementId) {
+      query = query.startAfter(cursor.date, cursor.movementId);
+    }
+
+    const pageLimit = Number(limit || filters.limit || 50);
+    const snapshot = await query
+      .limit(pageLimit + 1)
+      .get();
+    const docs = snapshot.docs.slice(0, pageLimit);
+    const hasMore = snapshot.docs.length > pageLimit;
+    const lastDoc = docs[docs.length - 1];
+    const movements = docs
       .map(mapDocument)
       .filter((movement) => movement && movement.active !== false)
       .map((movement) => ({
         ...movement,
         movementId: movement.id
       }));
+
+    return {
+      movements,
+      pagination: {
+        hasMore,
+        nextCursor: lastDoc ? {
+          date: lastDoc.get('date') || '',
+          movementId: lastDoc.id
+        } : null
+      }
+    };
   }
 
   async createActionLog(logData) {

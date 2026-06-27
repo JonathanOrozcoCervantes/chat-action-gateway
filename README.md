@@ -157,7 +157,7 @@ Tools disponibles:
 - `create_income`: registra un ingreso y suma saldo a la cuenta.
 - `create_transfer`: mueve dinero entre dos cuentas.
 - `set_account_balance`: ajusta el saldo de una cuenta y deja movimiento de auditoria.
-- `list_movements`: consulta movimientos por rango de tiempo y filtros.
+- `list_movements`: consulta movimientos por rango de tiempo y filtros, con paginacion por cursor.
 
 Las tools no aceptan `token` ni `userId`. Esos datos se resuelven desde `Authorization: Bearer <access_token>` en cada request MCP.
 
@@ -166,6 +166,8 @@ Las tools devuelven errores estructurados para agentes con `code`, `message`, `a
 Las cuentas nuevas requieren saldo actual explicito. Si el agente intenta crear una cuenta sin `balance`, la tool devuelve `initial_balance_required` para que pregunte al usuario el saldo actual, o confirme que quiere iniciar en `0`.
 
 Las categorias de gastos e ingresos son catalogo controlado por workspace, no texto libre improvisado en cada movimiento. Antes de registrar un gasto o ingreso, el agente debe usar una categoria existente por `categoryId` o `categoryName`. Si no existe, debe llamar `list_categories`, preguntar al usuario si quiere usar una existente o crear una nueva, y solo llamar `upsert_category` cuando el usuario confirme.
+
+`list_movements` devuelve una pagina de resultados. Si `pagination.hasMore` es `true`, el agente debe decirle al usuario que hay mas movimientos y preguntarle si quiere ver la siguiente pagina. Para continuar, debe llamar otra vez `list_movements` con los mismos filtros y `cursor` igual a `pagination.nextCursor`.
 
 ## Firestore
 

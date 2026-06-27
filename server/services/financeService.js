@@ -49,6 +49,38 @@ const ensureScope = (authContext, requiredScope) => {
 };
 
 const normalizeIdempotencyKey = (value, prefix) => value || `${prefix}-${randomToken(18)}`;
+const MOVEMENT_SCAN_LIMIT = 1000;
+const MOVEMENT_RAW_PAGE_LIMIT = 200;
+
+const encodeMovementCursor = (cursor) => Buffer
+  .from(JSON.stringify(cursor))
+  .toString('base64url');
+
+const decodeMovementCursor = (cursor = '') => {
+  if (!cursor) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+
+    if (!parsed?.date || !parsed?.movementId) {
+      throw new Error('Missing cursor fields.');
+    }
+
+    return {
+      date: String(parsed.date),
+      movementId: String(parsed.movementId)
+    };
+  } catch (error) {
+    throw createAgentError({
+      code: 'invalid_cursor',
+      message: 'The pagination cursor is invalid.',
+      agentAction: 'Call list_movements again without cursor to restart from the first page, or use the exact nextCursor returned by the previous list_movements response.',
+      missingFields: ['cursor']
+    });
+  }
+};
 
 const requireSameCurrency = ({ expectedCurrency, actualCurrency, field, account }) => {
   if (expectedCurrency !== actualCurrency) {
@@ -1320,30 +1352,10 @@ class FinanceService {
       accountId = account.accountId;
     }
 
-    const movements = (await financeRepository.listMovements({
+    const page = await this.listFilteredMovementPage({
       workspaceId: workspace.workspaceId,
-      filters: normalizedPayload
-    })).filter((movement) => {
-      if (normalizedPayload.type && movement.type !== normalizedPayload.type) {
-        return false;
-      }
-
-      if (normalizedPayload.categoryId && movement.categoryId !== normalizedPayload.categoryId) {
-        return false;
-      }
-
-      if (
-        normalizedPayload.categoryName
-        && normalizeLookupName(movement.categoryName || movement.category) !== normalizeLookupName(normalizedPayload.categoryName)
-      ) {
-        return false;
-      }
-
-      if (accountId && !this.movementTouchesAccount(movement, accountId)) {
-        return false;
-      }
-
-      return true;
+      filters: normalizedPayload,
+      accountId
     });
 
     return {
@@ -1353,10 +1365,129 @@ class FinanceService {
       period: normalizedPayload.period,
       startDate: normalizedPayload.startDate,
       endDate: normalizedPayload.endDate,
-      count: movements.length,
-      summary: this.summarizeMovements(movements),
-      movements
+      count: page.movements.length,
+      summary: this.summarizeMovements(page.movements),
+      pagination: page.pagination,
+      movements: page.movements
     };
+  }
+
+  async listFilteredMovementPage({ workspaceId, filters, accountId }) {
+    const limit = filters.limit;
+    const rawPageLimit = Math.min(MOVEMENT_RAW_PAGE_LIMIT, Math.max(limit, 50));
+    let cursor = decodeMovementCursor(filters.cursor);
+    let nextRawCursor = cursor;
+    let scannedCount = 0;
+    let hasMore = false;
+    let nextCursor = '';
+    let scanLimitReached = false;
+    const movements = [];
+
+    while (scannedCount < MOVEMENT_SCAN_LIMIT) {
+      const page = await financeRepository.listMovements({
+        workspaceId,
+        filters,
+        cursor: nextRawCursor,
+        limit: rawPageLimit
+      });
+
+      if (!page.movements.length) {
+        hasMore = false;
+        nextCursor = '';
+        break;
+      }
+
+      for (const movement of page.movements) {
+        scannedCount += 1;
+        const movementCursor = {
+          date: movement.date,
+          movementId: movement.movementId
+        };
+
+        if (this.movementMatchesFilters({
+          movement,
+          filters,
+          accountId
+        })) {
+          if (movements.length < limit) {
+            movements.push(movement);
+          } else {
+            hasMore = true;
+            nextCursor = encodeMovementCursor({
+              date: movements[movements.length - 1].date,
+              movementId: movements[movements.length - 1].movementId
+            });
+            break;
+          }
+        }
+
+        nextRawCursor = movementCursor;
+
+        if (scannedCount >= MOVEMENT_SCAN_LIMIT) {
+          break;
+        }
+      }
+
+      if (hasMore) {
+        break;
+      }
+
+      if (scannedCount >= MOVEMENT_SCAN_LIMIT) {
+        scanLimitReached = Boolean(page.pagination.hasMore);
+        hasMore = scanLimitReached;
+        nextCursor = scanLimitReached && nextRawCursor
+          ? encodeMovementCursor(nextRawCursor)
+          : '';
+        break;
+      }
+
+      if (!page.pagination.hasMore) {
+        hasMore = false;
+        nextCursor = '';
+        break;
+      }
+
+      nextRawCursor = page.pagination.nextCursor;
+    }
+
+    return {
+      movements,
+      pagination: {
+        limit,
+        returned: movements.length,
+        hasMore,
+        nextCursor,
+        scannedCount,
+        scanLimit: MOVEMENT_SCAN_LIMIT,
+        scanLimitReached,
+        instruction: hasMore
+          ? 'More movements are available. Ask the user if they want to see the next page, then call list_movements again with the same filters and this nextCursor as cursor.'
+          : 'No more movements are available for these filters.'
+      }
+    };
+  }
+
+  movementMatchesFilters({ movement, filters, accountId }) {
+    if (filters.type && movement.type !== filters.type) {
+      return false;
+    }
+
+    if (filters.categoryId && movement.categoryId !== filters.categoryId) {
+      return false;
+    }
+
+    if (
+      filters.categoryName
+      && normalizeLookupName(movement.categoryName || movement.category) !== normalizeLookupName(filters.categoryName)
+    ) {
+      return false;
+    }
+
+    if (accountId && !this.movementTouchesAccount(movement, accountId)) {
+      return false;
+    }
+
+    return true;
   }
 
   movementTouchesAccount(movement, accountId) {
