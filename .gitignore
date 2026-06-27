@@ -9,9 +9,5 @@ firestore-debug.log
 ui-debug.log
 .firebase/
 server/node_modules
-server/config/settingsLocal.js
-server/config/settingsLocal*.js
 *.local
 .DS_Store
-src/config/settingsLocal.js
-src/config/settingsLocal*.js

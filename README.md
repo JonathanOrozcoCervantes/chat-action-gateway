@@ -20,10 +20,10 @@ npm install
 cd server && npm install
 ```
 
-Crear una copia local de settings del servidor si quieres apagar App Check en emuladores:
+Crear variables locales del frontend y backend:
 
 ```sh
-cp server/config/settingsLocal.example.js server/config/settingsLocal.js
+cp .env.example .env.local
 ```
 
 Levantar frontend:
@@ -44,12 +44,21 @@ El frontend lee:
 
 - `VITE_API_BASE_URL`, por default `/api`.
 - `VITE_SITE_KEY_RECAPTCHA`, requerido para inicializar App Check.
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_FIREBASE_MEASUREMENT_ID`
 
 El backend usa `server/config/settings.js`, con el mismo patron de AiAssistant:
 
 - en cloud lee el secret JSON `CONFIGS_FUNCTIONS`;
-- en local intenta `server/config/settingsLocal.js`;
+- en local lee variables de `.env` y `.env.local` en la raiz del proyecto;
 - si no hay valor, la variable queda sin definir.
+
+Las variables `VITE_*` son las unicas que Vite expone al frontend. Las variables del backend como `OAUTH_ACCESS_TOKEN_SECRET` no se empaquetan en el bundle del navegador.
 
 Formato esperado del secret:
 
@@ -68,7 +77,7 @@ Formato esperado del secret:
 
 En runtime cloud, `APP_CHECK_ENFORCEMENT` falla cerrado: si el valor falta o `CONFIGS_FUNCTIONS` no se puede parsear, la API normal bajo `/api` trata App Check como habilitado. Para apagarlo debe configurarse explicitamente como `false`.
 
-La pantalla de login OAuth vive en el frontend React, en `src/pages/OAuthLogin.jsx`, y usa la config publica de `src/firebase.js`.
+La pantalla de login OAuth vive en el frontend React, en `src/pages/OAuthLogin.jsx`, y usa la config publica de Firebase desde variables `VITE_FIREBASE_*`.
 
 ## API HTTP Normal
 

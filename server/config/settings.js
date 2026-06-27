@@ -1,4 +1,7 @@
-let localSettings = null;
+const fs = require('fs');
+const path = require('path');
+
+let localEnvConfigCache;
 let secretConfigCache;
 const isCloudRuntime = Boolean(
   process.env.K_SERVICE
@@ -7,15 +10,73 @@ const isCloudRuntime = Boolean(
 );
 
 if (!isCloudRuntime) {
-  try {
-    localSettings = require('./settingsLocal');
-    console.log('Using local settings');
-  } catch (e) {
-    console.log('Using Firebase secret CONFIGS_FUNCTIONS');
-  }
+  console.log('Using local environment settings');
 } else {
   console.log('Using Firebase secret CONFIGS_FUNCTIONS');
 }
+
+const parseEnvValue = (value) => {
+  const trimmed = String(value || '').trim();
+
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+
+  return trimmed;
+};
+
+const parseEnvFile = (filePath) => {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+
+  return fs.readFileSync(filePath, 'utf8')
+    .split(/\r?\n/)
+    .reduce((config, line) => {
+      const trimmed = line.trim();
+
+      if (!trimmed || trimmed.startsWith('#')) {
+        return config;
+      }
+
+      const separatorIndex = trimmed.indexOf('=');
+
+      if (separatorIndex < 0) {
+        return config;
+      }
+
+      const key = trimmed.slice(0, separatorIndex).trim();
+      const value = trimmed.slice(separatorIndex + 1);
+
+      if (key) {
+        config[key] = parseEnvValue(value);
+      }
+
+      return config;
+    }, {});
+};
+
+const getLocalEnvConfig = () => {
+  if (localEnvConfigCache !== undefined) {
+    return localEnvConfigCache;
+  }
+
+  if (isCloudRuntime) {
+    localEnvConfigCache = {};
+    return localEnvConfigCache;
+  }
+
+  const projectRoot = path.resolve(__dirname, '..', '..');
+  localEnvConfigCache = {
+    ...parseEnvFile(path.join(projectRoot, '.env')),
+    ...parseEnvFile(path.join(projectRoot, '.env.local'))
+  };
+
+  return localEnvConfigCache;
+};
 
 const getSecretConfig = () => {
   if (secretConfigCache !== undefined) {
@@ -40,13 +101,18 @@ const getSecretConfig = () => {
 };
 
 const getConfigValue = (key) => {
+  if (process.env[key] !== undefined) {
+    return process.env[key];
+  }
+
   const secretConfig = getSecretConfig();
   if (secretConfig[key] !== undefined) {
     return secretConfig[key];
   }
 
-  if (!isCloudRuntime && localSettings && localSettings[key] !== undefined) {
-    return localSettings[key];
+  const localEnvConfig = getLocalEnvConfig();
+  if (localEnvConfig[key] !== undefined) {
+    return localEnvConfig[key];
   }
 
   return undefined;
