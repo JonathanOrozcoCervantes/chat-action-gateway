@@ -104,7 +104,7 @@ El endpoint viejo `/action/...` con `token` por URL ya no existe.
 La misma Function `apiV2` sirve el servidor MCP:
 
 ```txt
-https://chat-action-gateway.web.app/mcp
+https://chat-action-gateway.web.app/mcp/finance
 ```
 
 El MCP usa OAuth con Google Sign-In. Cuando ChatGPT necesita autorizar el conector, abre `/oauth/authorize`; la Function redirige al frontend `/oauth-login`, ahi el usuario inicia sesion con Google. El backend verifica el ID token de Firebase Auth, crea o actualiza `users/{firebaseUid}`, crea un workspace personal si el usuario aun no tiene workspaces y emite el authorization code para ChatGPT.
@@ -142,7 +142,7 @@ Rutas OAuth publicadas:
 
 Configuracion manual en ChatGPT, si la deteccion automatica no llena todo:
 
-- URL del servidor: `https://chat-action-gateway.web.app/mcp`
+- URL del servidor: `https://chat-action-gateway.web.app/mcp/finance`
 - Autenticacion: OAuth
 - Metodo de registro: Dynamic client registration, o cliente definido por el usuario
 - Client ID manual: `chat-action-gateway-chatgpt`
@@ -151,7 +151,7 @@ Configuracion manual en ChatGPT, si la deteccion automatica no llena todo:
 - Authorization URL: `https://chat-action-gateway.web.app/oauth/authorize`
 - Token URL: `https://chat-action-gateway.web.app/oauth/token`
 - Registration URL: `https://chat-action-gateway.web.app/oauth/register`
-- Resource: `https://chat-action-gateway.web.app/mcp`
+- Resource: `https://chat-action-gateway.web.app/mcp/finance`
 - Scopes: `workspaces:read workspaces:write members:read members:write categories:read categories:write accounts:read accounts:write payment_methods:read payment_methods:write movements:read expenses:write income:write transfers:write`
 
 Tools disponibles:

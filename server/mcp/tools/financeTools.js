@@ -1,7 +1,7 @@
 const { z } = require('zod');
-const financeService = require('../services/financeService');
-const { toMcpToolError } = require('../utils/agentError');
-const { logError, logInfo } = require('../utils/logger');
+const financeService = require('../../services/financeService');
+const { toMcpToolError } = require('../../utils/agentError');
+const { logError, logInfo } = require('../../utils/logger');
 
 const moneyInput = z.union([z.number(), z.string()]);
 const optionalText = (max = 500) => z.string().max(max).optional();

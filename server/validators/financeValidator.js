@@ -1,5 +1,5 @@
 const { createAgentError } = require('../utils/agentError');
-const { FINANCE_SCOPES, READ_SCOPES, WRITE_SCOPES } = require('../mcp/scopes');
+const { FINANCE_SCOPES, READ_SCOPES, WRITE_SCOPES } = require('../mcp/profiles/finance/scopes');
 
 const MAX_TEXT_LENGTH = 500;
 const DEFAULT_CURRENCY = 'MXN';

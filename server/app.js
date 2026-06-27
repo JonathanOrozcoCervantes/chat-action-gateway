@@ -34,10 +34,10 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.get('/.well-known/oauth-protected-resource', oauthController.getProtectedResourceMetadata);
 app.get('/.well-known/oauth-authorization-server', oauthController.getAuthorizationServerMetadata);
 app.get('/.well-known/openid-configuration', oauthController.getAuthorizationServerMetadata);
-app.get('/mcp/.well-known/oauth-protected-resource', oauthController.getProtectedResourceMetadata);
+app.get('/mcp/:profileId/.well-known/oauth-protected-resource', oauthController.getProtectedResourceMetadata);
 app.use('/oauth', oauthRoutes);
-app.all('/mcp', handleMcpRequest);
-app.all('/mcp/*', handleMcpRequest);
+app.all('/mcp/:profileId', handleMcpRequest);
+app.all('/mcp/:profileId/*', handleMcpRequest);
 
 app.use('/api', apiCors, apiRoutes);
 

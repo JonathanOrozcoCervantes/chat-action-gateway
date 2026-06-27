@@ -1,5 +1,5 @@
 const { db, admin } = require('../firebaseAdmin');
-const { FINANCE_SCOPES } = require('../mcp/scopes');
+const { FINANCE_SCOPES } = require('../mcp/profiles/finance/scopes');
 const AppError = require('../utils/AppError');
 
 const cleanData = (data) => Object.fromEntries(

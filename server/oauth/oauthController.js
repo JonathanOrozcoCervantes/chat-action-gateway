@@ -1,6 +1,11 @@
 const oauthService = require('../services/oauthService');
-const { getMcpResourceUrl, getPublicBaseUrl } = require('../utils/http');
-const { DEFAULT_OAUTH_SCOPE, FINANCE_SCOPES } = require('../mcp/scopes');
+const {
+  getMcpProfileIdFromRequest,
+  getMcpProfileIdFromResource,
+  getMcpResourceUrlForProfile,
+  getPublicBaseUrl
+} = require('../utils/http');
+const { getDefaultMcpProfile, getMcpProfile, getSupportedMcpScopes } = require('../mcp/profiles');
 
 const AUTHORIZE_FIELDS = [
   'response_type',
@@ -47,13 +52,33 @@ const sendOAuthError = (res, error) => {
   });
 };
 
+const getRequestedProfile = (req, resource, { allowDefault = true } = {}) => {
+  const profileId = resource
+    ? getMcpProfileIdFromResource(req, resource)
+    : getMcpProfileIdFromRequest(req);
+
+  if (profileId) {
+    return getMcpProfile(profileId);
+  }
+
+  return allowDefault ? getDefaultMcpProfile() : null;
+};
+
 const getProtectedResourceMetadata = (req, res) => {
   const baseUrl = getPublicBaseUrl(req);
+  const profile = getRequestedProfile(req, req.query.resource, { allowDefault: !getMcpProfileIdFromRequest(req) });
 
-  res.status(200).json({
-    resource: `${baseUrl}/mcp`,
+  if (!profile) {
+    return res.status(404).json({
+      error: 'mcp_profile_not_found',
+      error_description: 'Unknown MCP profile.'
+    });
+  }
+
+  return res.status(200).json({
+    resource: getMcpResourceUrlForProfile(req, profile.id),
     authorization_servers: [baseUrl],
-    scopes_supported: FINANCE_SCOPES,
+    scopes_supported: profile.scopes,
     bearer_methods_supported: ['header'],
     resource_documentation: `${baseUrl}/`
   });
@@ -71,15 +96,16 @@ const getAuthorizationServerMetadata = (req, res) => {
     grant_types_supported: ['authorization_code'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: FINANCE_SCOPES,
+    scopes_supported: getSupportedMcpScopes(),
     resource_parameter_supported: true
   });
 };
 
 const getAuthorizePage = (req, res) => {
+  const defaultProfile = getDefaultMcpProfile();
   const params = {
-    scope: DEFAULT_OAUTH_SCOPE,
-    resource: getMcpResourceUrl(req),
+    scope: defaultProfile.defaultScope,
+    resource: getMcpResourceUrlForProfile(req, defaultProfile.id),
     ...pickAuthorizeParams(req.query)
   };
 
@@ -88,16 +114,18 @@ const getAuthorizePage = (req, res) => {
 
 const authorize = async (req, res) => {
   const params = pickAuthorizeParams(req.body);
+  const expectedProfile = getRequestedProfile(req, params.resource) || getDefaultMcpProfile();
+  const expectedResource = getMcpResourceUrlForProfile(req, expectedProfile.id);
 
   try {
     const result = await oauthService.createAuthorizationCode({
       payload: {
-        scope: DEFAULT_OAUTH_SCOPE,
-        resource: getMcpResourceUrl(req),
+        scope: expectedProfile.defaultScope,
+        resource: expectedResource,
         ...params
       },
       firebaseIdToken: req.body.firebaseIdToken,
-      expectedResource: getMcpResourceUrl(req)
+      expectedResource
     });
 
     const redirectUrl = new URL(result.redirectUri);

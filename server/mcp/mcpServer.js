@@ -1,13 +1,12 @@
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
-const { registerFinanceTools } = require('./financeTools');
 
-const createMcpServer = ({ authContext }) => {
+const createMcpServer = ({ authContext, profile }) => {
   const server = new McpServer({
-    name: 'chat-action-gateway',
-    version: '0.2.0'
+    name: profile.name,
+    version: profile.version
   });
 
-  registerFinanceTools(server, { authContext });
+  profile.registerTools(server, { authContext });
 
   return server;
 };

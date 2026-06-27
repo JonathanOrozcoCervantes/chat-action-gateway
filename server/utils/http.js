@@ -13,9 +13,51 @@ const getPublicBaseUrl = (req) => {
   return `${protocol}://${host}`;
 };
 
-const getMcpResourceUrl = (req) => `${getPublicBaseUrl(req)}/mcp`;
+const getMcpProfileIdFromPath = (path) => {
+  try {
+    const url = new URL(String(path || ''), 'https://placeholder.local');
+    const match = url.pathname.match(/^\/mcp\/([^/]+)(?:\/|$)/);
+
+    return match ? match[1] : '';
+  } catch (error) {
+    return '';
+  }
+};
+
+const getMcpProfileIdFromRequest = (req) => getMcpProfileIdFromPath(req.originalUrl || req.path);
+
+const getMcpResourceUrlForProfile = (req, profileId) => `${getPublicBaseUrl(req)}/mcp/${profileId}`;
+
+const getMcpResourceUrl = (req) => {
+  const profileId = getMcpProfileIdFromRequest(req);
+
+  return profileId ? getMcpResourceUrlForProfile(req, profileId) : '';
+};
+
+const getMcpProfileIdFromResource = (req, resource) => {
+  if (!resource) {
+    return '';
+  }
+
+  try {
+    const resourceUrl = new URL(resource);
+    const baseUrl = new URL(getPublicBaseUrl(req));
+
+    if (resourceUrl.origin !== baseUrl.origin) {
+      return '';
+    }
+
+    return getMcpProfileIdFromPath(resourceUrl.pathname);
+  } catch (error) {
+    return '';
+  }
+};
 
 module.exports = {
   getPublicBaseUrl,
-  getMcpResourceUrl
+  getMcpProfileIdFromPath,
+  getMcpProfileIdFromRequest,
+  getMcpProfileIdFromResource,
+  getMcpResourceUrl,
+  getMcpResourceUrlForProfile
 };

@@ -6,9 +6,9 @@ const { OAUTH_ACCESS_TOKEN_SECRET } = require('../config/settings');
 const AppError = require('../utils/AppError');
 const { createPkceChallenge, hashValue, randomToken } = require('../utils/security');
 const { signJwt, verifyJwt } = require('../utils/jwt');
-const { DEFAULT_OAUTH_SCOPE, FINANCE_SCOPES } = require('../mcp/scopes');
+const { getMcpProfileIdFromPath } = require('../utils/http');
+const { getDefaultMcpProfile, getMcpProfile, getSupportedMcpScopes } = require('../mcp/profiles');
 
-const SUPPORTED_SCOPES = new Set(FINANCE_SCOPES);
 const STATIC_CLIENT_ID = 'chat-action-gateway-chatgpt';
 const AUTH_CODE_TTL_SECONDS = 10 * 60;
 const ACCESS_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -48,13 +48,29 @@ const createOAuthError = ({ statusCode = 400, code = 'invalid_request', message 
   message
 });
 
-const parseRequestedScopeList = (scope) => parseScopes(scope, FINANCE_SCOPES);
+const getProfileFromResource = (resource) => {
+  try {
+    const url = new URL(resource);
+    const profileId = getMcpProfileIdFromPath(url.pathname);
+
+    return getMcpProfile(profileId);
+  } catch (error) {
+    return null;
+  }
+};
+
+const getScopeList = (profile) => profile?.scopes || getSupportedMcpScopes();
+
+const getDefaultScope = (profile) => profile?.defaultScope || getDefaultMcpProfile().defaultScope;
+
+const parseRequestedScopeList = (scope, profile) => parseScopes(scope, getScopeList(profile));
 
 const parseTokenScopeList = (scope) => parseScopes(scope);
 
-const getSupportedRequestedScope = (requestedScope) => {
-  const requestedScopes = parseRequestedScopeList(requestedScope);
-  const unsupportedScopes = requestedScopes.filter((scope) => !SUPPORTED_SCOPES.has(scope));
+const getSupportedRequestedScope = (requestedScope, profile) => {
+  const supportedScopes = new Set(getScopeList(profile));
+  const requestedScopes = parseRequestedScopeList(requestedScope, profile);
+  const unsupportedScopes = requestedScopes.filter((scope) => !supportedScopes.has(scope));
 
   if (unsupportedScopes.length) {
     throw createOAuthError({
@@ -66,11 +82,15 @@ const getSupportedRequestedScope = (requestedScope) => {
   return requestedScopes.join(' ');
 };
 
-const normalizeScope = (scope) => getSupportedRequestedScope(scope);
+const normalizeScope = (scope, profile) => getSupportedRequestedScope(scope, profile);
 
-const normalizeTokenScope = (scope) => parseTokenScopeList(scope)
-  .filter((tokenScope) => SUPPORTED_SCOPES.has(tokenScope))
-  .join(' ');
+const normalizeTokenScope = (scope, profile) => {
+  const supportedScopes = new Set(getScopeList(profile));
+
+  return parseTokenScopeList(scope)
+    .filter((tokenScope) => supportedScopes.has(tokenScope))
+    .join(' ');
+};
 
 const hasScope = (grantedScope, requiredScope) => {
   if (!requiredScope) {
@@ -147,7 +167,7 @@ class OAuthService {
       });
     }
 
-    const scope = normalizeScope(payload.scope || DEFAULT_OAUTH_SCOPE);
+    const scope = normalizeScope(payload.scope || getDefaultScope());
 
     return {
       client_id: `chatgpt_${randomToken(18)}`,
@@ -166,8 +186,9 @@ class OAuthService {
     const redirectUri = trimText(payload.redirect_uri);
     const codeChallenge = trimText(payload.code_challenge);
     const codeChallengeMethod = trimText(payload.code_challenge_method || 'S256');
-    const scope = normalizeScope(payload.scope || DEFAULT_OAUTH_SCOPE);
     const resource = trimText(payload.resource || expectedResource);
+    const profile = getProfileFromResource(resource);
+    const scope = normalizeScope(payload.scope || getDefaultScope(profile), profile);
 
     if (responseType !== 'code') {
       throw createOAuthError({
@@ -194,6 +215,13 @@ class OAuthService {
       throw createOAuthError({
         code: 'invalid_target',
         message: 'Invalid MCP resource.'
+      });
+    }
+
+    if (!profile) {
+      throw createOAuthError({
+        code: 'invalid_target',
+        message: 'Unknown MCP profile.'
       });
     }
 
@@ -334,7 +362,8 @@ class OAuthService {
     scope,
     resource
   }) {
-    const normalizedScope = normalizeTokenScope(scope);
+    const profile = getProfileFromResource(resource);
+    const normalizedScope = normalizeTokenScope(scope, profile);
 
     if (!normalizedScope) {
       throw createOAuthError({

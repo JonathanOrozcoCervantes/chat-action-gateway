@@ -1,9 +1,12 @@
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { createMcpServer } = require('./mcpServer');
+const { getMcpProfile } = require('./profiles');
 const oauthService = require('../services/oauthService');
-const { getMcpResourceUrl, getPublicBaseUrl } = require('../utils/http');
+const {
+  getMcpProfileIdFromRequest,
+  getMcpResourceUrlForProfile
+} = require('../utils/http');
 const { logError, logInfo, logWarning } = require('../utils/logger');
-const { DEFAULT_OAUTH_SCOPE } = require('./scopes');
 
 const MCP_METHODS = new Set(['POST', 'GET', 'DELETE']);
 
@@ -40,15 +43,15 @@ const summarizeMcpBody = (body) => {
   };
 };
 
-const sendAuthChallenge = (req, res, error) => {
+const sendAuthChallenge = (req, res, error, profile) => {
   const isAppError = error.name === 'AppError';
-  const baseUrl = getPublicBaseUrl(req);
+  const resourceUrl = getMcpResourceUrlForProfile(req, profile.id);
   const statusCode = isAppError ? error.statusCode : 500;
 
   if (statusCode === 401 || statusCode === 403) {
     res.setHeader(
       'WWW-Authenticate',
-      `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource", scope="${DEFAULT_OAUTH_SCOPE}"`
+      `Bearer resource_metadata="${resourceUrl}/.well-known/oauth-protected-resource", scope="${profile.defaultScope}"`
     );
   }
 
@@ -76,11 +79,28 @@ const handleMcpRequest = async (req, res) => {
     });
   }
 
+  const profileId = getMcpProfileIdFromRequest(req);
+  const profile = getMcpProfile(profileId);
+
+  if (!profile) {
+    logWarning('mcp.request.profile_not_found', {
+      httpMethod: req.method,
+      path: req.originalUrl,
+      profileId
+    });
+
+    return res.status(404).json({
+      error: 'mcp_profile_not_found',
+      error_description: 'Unknown MCP profile. Use /mcp/finance for finance tools.'
+    });
+  }
+
+  const resourceUrl = getMcpResourceUrlForProfile(req, profile.id);
   let authContext;
 
   try {
     authContext = await oauthService.verifyAccessToken(getBearerToken(req), {
-      resource: getMcpResourceUrl(req)
+      resource: resourceUrl
     });
   } catch (error) {
     logWarning('mcp.request.auth_failed', {
@@ -91,7 +111,7 @@ const handleMcpRequest = async (req, res) => {
       errorMessage: error.message || 'Authentication failed.'
     });
 
-    return sendAuthChallenge(req, res, error);
+    return sendAuthChallenge(req, res, error, profile);
   }
 
   logInfo('mcp.request.authenticated', {
@@ -101,10 +121,11 @@ const handleMcpRequest = async (req, res) => {
     userId: authContext.userId,
     clientId: authContext.clientId,
     resource: authContext.resource,
+    profileId: profile.id,
     ...summarizeMcpBody(req.body)
   });
 
-  const server = createMcpServer({ authContext });
+  const server = createMcpServer({ authContext, profile });
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true
@@ -124,6 +145,7 @@ const handleMcpRequest = async (req, res) => {
       path: req.originalUrl,
       userId: authContext.userId,
       clientId: authContext.clientId,
+      profileId: profile.id,
       ...summarizeMcpBody(req.body)
     });
 

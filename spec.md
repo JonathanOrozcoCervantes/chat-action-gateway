@@ -352,7 +352,7 @@ La API normal debe servir como base para futuros endpoints HTTP propios. No debe
 ## Rutas publicas importantes
 
 ```txt
-/mcp
+/mcp/finance
 /.well-known/oauth-protected-resource
 /.well-known/oauth-authorization-server
 /oauth/authorize
