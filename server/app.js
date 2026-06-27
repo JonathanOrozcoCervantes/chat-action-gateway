@@ -13,10 +13,6 @@ app.use(cors({ origin: true }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-app.get('/ping', (req, res) => {
-  res.status(200).json({ message: "I'm alive..." });
-});
-
 app.get('/.well-known/oauth-protected-resource', oauthController.getProtectedResourceMetadata);
 app.get('/.well-known/oauth-authorization-server', oauthController.getAuthorizationServerMetadata);
 app.get('/.well-known/openid-configuration', oauthController.getAuthorizationServerMetadata);
