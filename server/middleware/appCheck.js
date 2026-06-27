@@ -2,7 +2,7 @@ const { admin } = require('../firebaseAdmin');
 const { APP_CHECK_ENFORCEMENT } = require('../config/settings');
 
 const appCheckVerification = async (req, res, next) => {
-  if (!APP_CHECK_ENFORCEMENT) {
+  if (APP_CHECK_ENFORCEMENT === false) {
     return next();
   }
 

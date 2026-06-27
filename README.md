@@ -66,6 +66,8 @@ Formato esperado del secret:
 
 `OAUTH_ACCESS_TOKEN_SECRET` firma los access tokens JWT que usa el MCP. Cambiarlo invalida los access tokens emitidos antes.
 
+En runtime cloud, `APP_CHECK_ENFORCEMENT` falla cerrado: si el valor falta o `CONFIGS_FUNCTIONS` no se puede parsear, la API normal bajo `/api` trata App Check como habilitado. Para apagarlo debe configurarse explicitamente como `false`.
+
 La pantalla de login OAuth vive en el frontend React, en `src/pages/OAuthLogin.jsx`, y usa la config publica de `src/firebase.js`.
 
 ## API HTTP Normal
