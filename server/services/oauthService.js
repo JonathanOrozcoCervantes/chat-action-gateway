@@ -328,7 +328,7 @@ class OAuthService {
     });
   }
 
-  issueTokens({
+  async issueTokens({
     userId,
     clientId,
     scope,
@@ -344,12 +344,14 @@ class OAuthService {
       });
     }
 
+    const oauthTokenVersion = await userRepository.incrementOAuthTokenVersion(userId);
     const accessToken = signJwt({
       sub: userId,
       client_id: clientId,
       scope: normalizedScope,
       aud: resource,
-      resource
+      resource,
+      oauth_token_version: oauthTokenVersion
     }, getAccessTokenSecret(), ACCESS_TOKEN_TTL_SECONDS);
 
     return {
@@ -388,6 +390,19 @@ class OAuthService {
         statusCode: 401,
         code: 'invalid_token',
         message: 'Access token was issued for a different MCP resource.'
+      });
+    }
+
+    const userAuthState = await userRepository.getUserAuthState(tokenPayload.sub);
+    const tokenVersion = Number.isInteger(tokenPayload.oauth_token_version)
+      ? tokenPayload.oauth_token_version
+      : 0;
+
+    if (!userAuthState || tokenVersion !== userAuthState.oauthTokenVersion) {
+      throw createOAuthError({
+        statusCode: 401,
+        code: 'invalid_token',
+        message: 'Access token has been revoked. Reconnect the MCP to get a new token.'
       });
     }
 

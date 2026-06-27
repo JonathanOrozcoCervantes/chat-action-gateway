@@ -21,7 +21,8 @@ El flujo principal ya no usa enlaces `/action/...` con `token` por URL. El model
 9. El backend valida que los scopes solicitados existan en la lista soportada por el MCP.
 10. ChatGPT recibe un access token OAuth con los scopes concedidos.
 11. Cada request MCP usa `Authorization: Bearer <access_token>`.
-12. Cada tool valida el scope especifico contra `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` y escribe o consulta en el workspace correcto.
+12. Cada request MCP valida que la version del token coincida con `users/{firebaseUid}.oauthTokenVersion`.
+13. Cada tool valida el scope especifico contra `workspaces/{workspaceId}/members/{firebaseUid}.grantedScopes` y escribe o consulta en el workspace correcto.
 
 Este modelo permite que muchas personas usen el mismo MCP sin mezclar registros.
 
@@ -45,7 +46,10 @@ oauthAuthorizationCodes/{codeHash}
 ```txt
 workspaces
 defaultWorkspaceId
+oauthTokenVersion
 ```
+
+`oauthTokenVersion` se incrementa cada vez que ChatGPT intercambia un authorization code por un access token. El JWT emitido incluye esa version; si el usuario vuelve a autenticar el MCP, los tokens anteriores dejan de coincidir y quedan invalidados.
 
 `workspaces/{workspaceId}/members/{firebaseUid}` queda como base para roles y permisos por workspace.
 

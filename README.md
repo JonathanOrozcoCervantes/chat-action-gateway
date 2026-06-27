@@ -75,6 +75,8 @@ Formato esperado del secret:
 
 `OAUTH_ACCESS_TOKEN_SECRET` firma los access tokens JWT que usa el MCP. Cambiarlo invalida los access tokens emitidos antes.
 
+Cada vez que ChatGPT intercambia un authorization code por un access token, el backend incrementa `users/{firebaseUid}.oauthTokenVersion` e incluye esa version en el JWT. Al verificar cada request MCP, la version del token debe coincidir con la version actual del usuario; por eso una nueva autenticacion invalida automaticamente los access tokens anteriores de ese usuario.
+
 En runtime cloud, `APP_CHECK_ENFORCEMENT` falla cerrado: si el valor falta o `CONFIGS_FUNCTIONS` no se puede parsear, la API normal bajo `/api` trata App Check como habilitado. Para apagarlo debe configurarse explicitamente como `false`.
 
 La pantalla de login OAuth vive en el frontend React, en `src/pages/OAuthLogin.jsx`, y usa la config publica de Firebase desde variables `VITE_FIREBASE_*`.
