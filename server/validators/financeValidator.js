@@ -12,7 +12,6 @@ const ACCOUNT_TYPES = new Set([
   'wallet',
   'credit_card',
   'investment',
-  'loan',
   'other'
 ]);
 
@@ -48,7 +47,23 @@ const MOVEMENT_TYPES = new Set([
   'expense',
   'income',
   'transfer',
-  'balance_adjustment'
+  'balance_adjustment',
+  'credit_disbursement',
+  'credit_purchase',
+  'credit_payment'
+]);
+
+const CREDIT_STATUSES = new Set([
+  'active',
+  'paid',
+  'cancelled'
+]);
+
+const CREDIT_INTEREST_TYPES = new Set([
+  'no_interest',
+  'msi',
+  'fixed_total',
+  'fixed_payment'
 ]);
 
 const PERIODS = new Set([
@@ -208,6 +223,28 @@ const validateDateString = (value, field = 'date') => {
 
 const formatDate = (date) => date.toISOString().slice(0, 10);
 
+const validateNotFutureDate = (date, field = 'date', {
+  agentAction = `Ask the user for ${field} again before retrying.`
+} = {}) => {
+  const today = formatDate(new Date());
+
+  if (date > today) {
+    throw createAgentError({
+      code: 'future_date_not_allowed',
+      message: `${field} cannot be in the future for this action.`,
+      agentAction,
+      missingFields: [field],
+      details: {
+        field,
+        providedDate: date,
+        maxDate: today
+      }
+    });
+  }
+
+  return date;
+};
+
 const addDays = (date, days) => {
   const copy = new Date(date.getTime());
   copy.setUTCDate(copy.getUTCDate() + days);
@@ -333,6 +370,41 @@ const toMinorUnits = (value, {
 
 const fromMinorUnits = (minor) => Number((Number(minor || 0) / 100).toFixed(2));
 
+const normalizeBalanceForAccountType = ({ accountType, balanceMinor }) => {
+  if (accountType === 'credit_card' && balanceMinor > 0) {
+    return -balanceMinor;
+  }
+
+  return balanceMinor;
+};
+
+const requirePositiveInteger = (payload, field, agentAction) => {
+  const value = Number(payload[field]);
+
+  if (!Number.isInteger(value) || value <= 0) {
+    throw createAgentError({
+      code: 'invalid_field',
+      message: `${field} must be a positive integer.`,
+      agentAction,
+      missingFields: [field]
+    });
+  }
+
+  return value;
+};
+
+const requireOptionalMoney = (payload, field, options = {}) => {
+  if (payload[field] === undefined || payload[field] === null || payload[field] === '') {
+    return null;
+  }
+
+  return toMinorUnits(payload[field], {
+    field,
+    allowZero: true,
+    ...options
+  });
+};
+
 const normalizeWorkspaceId = (payload) => normalizeOptionalText(payload.workspaceId, 120, 'workspaceId');
 
 const normalizeEmail = (value) => {
@@ -381,6 +453,95 @@ const normalizeCategorySelector = (payload) => ({
   categoryId: normalizeOptionalText(payload.categoryId, 120, 'categoryId'),
   categoryName: normalizeOptionalText(payload.categoryName || payload.category, 80, 'categoryName')
 });
+
+const normalizeCreditSelector = (payload) => ({
+  creditId: normalizeOptionalText(payload.creditId, 120, 'creditId'),
+  creditName: normalizeOptionalText(payload.creditName || payload.name, 160, 'creditName')
+});
+
+const normalizeRepaymentPlan = (payload, { principalMinor, allowMsi = false } = {}) => {
+  const termMonths = requirePositiveInteger(
+    payload,
+    'termMonths',
+    'Ask the user how many months/installments the credit or financed purchase will be paid over.'
+  );
+  const firstPaymentDate = validateDateString(payload.firstPaymentDate, 'firstPaymentDate');
+  const allowedInterestTypes = allowMsi
+    ? CREDIT_INTEREST_TYPES
+    : new Set(Array.from(CREDIT_INTEREST_TYPES).filter((item) => item !== 'msi'));
+  const interestType = requireEnum(
+    payload,
+    'interestType',
+    allowedInterestTypes,
+    allowMsi
+      ? 'Ask whether this is MSI/no-interest, or whether there is a fixed total or fixed monthly payment.'
+      : 'Ask whether this credit has no interest, a fixed total to repay, or a fixed monthly payment.'
+  );
+  const totalRepaymentInputMinor = requireOptionalMoney(payload, 'totalRepaymentAmount', { allowZero: false });
+  const monthlyPaymentInputMinor = requireOptionalMoney(payload, 'monthlyPayment', { allowZero: false });
+  const interestAmountInputMinor = requireOptionalMoney(payload, 'interestAmount');
+  let totalRepaymentMinor = totalRepaymentInputMinor;
+  let monthlyPaymentMinor = monthlyPaymentInputMinor;
+  let interestAmountMinor = interestAmountInputMinor;
+
+  if (interestType === 'no_interest' || interestType === 'msi') {
+    totalRepaymentMinor = principalMinor;
+    interestAmountMinor = 0;
+  }
+
+  if (interestType === 'fixed_total') {
+    if (totalRepaymentMinor === null && interestAmountMinor !== null) {
+      totalRepaymentMinor = principalMinor + interestAmountMinor;
+    }
+
+    if (totalRepaymentMinor === null) {
+      throw createAgentError({
+        code: 'missing_credit_repayment_total',
+        message: 'totalRepaymentAmount or interestAmount is required for fixed_total credits.',
+        agentAction: 'Ask the user for the total amount they will repay, or the total interest/extra cost charged for the whole plan. Do not estimate it.',
+        missingFields: ['totalRepaymentAmount', 'interestAmount']
+      });
+    }
+
+    interestAmountMinor = totalRepaymentMinor - principalMinor;
+  }
+
+  if (interestType === 'fixed_payment') {
+    if (monthlyPaymentMinor === null) {
+      throw createAgentError({
+        code: 'missing_monthly_payment',
+        message: 'monthlyPayment is required for fixed_payment credits.',
+        agentAction: 'Ask the user the exact monthly payment amount. Do not estimate it from the principal.',
+        missingFields: ['monthlyPayment']
+      });
+    }
+
+    totalRepaymentMinor = monthlyPaymentMinor * termMonths;
+    interestAmountMinor = totalRepaymentMinor - principalMinor;
+  }
+
+  if (totalRepaymentMinor < principalMinor) {
+    throw createAgentError({
+      code: 'invalid_repayment_amount',
+      message: 'Total repayment cannot be lower than the financed amount.',
+      agentAction: 'Ask the user to confirm the financed amount, term, and total repayment or monthly payment.',
+      missingFields: ['totalRepaymentAmount', 'monthlyPayment']
+    });
+  }
+
+  return {
+    termMonths,
+    firstPaymentDate,
+    interestType,
+    monthlyPaymentMinor,
+    monthlyPayment: monthlyPaymentMinor === null ? null : fromMinorUnits(monthlyPaymentMinor),
+    totalRepaymentMinor,
+    totalRepayment: fromMinorUnits(totalRepaymentMinor),
+    interestAmountMinor,
+    interestAmount: fromMinorUnits(interestAmountMinor),
+    principalSplitKnown: interestType === 'no_interest' || interestType === 'msi'
+  };
+};
 
 const validateCreateWorkspacePayload = (payload = {}) => {
   const name = requireText(payload, 'name', {
@@ -476,26 +637,34 @@ const validateUpsertAccountPayload = (payload = {}) => {
     maxLength: 160,
     agentAction: 'Ask the user for the account name before creating or updating it.'
   });
+  const type = normalizeEnum(payload, 'type', ACCOUNT_TYPES, 'bank', 'Ask the user what type of account this is.');
   const balanceValue = payload.balance === undefined || payload.balance === null || payload.balance === ''
     ? 0
     : payload.balance;
   const balanceWasProvided = !(payload.balance === undefined || payload.balance === null || payload.balance === '');
-  const balanceMinor = toMinorUnits(balanceValue, {
+  const parsedBalanceMinor = toMinorUnits(balanceValue, {
     field: 'balance',
     allowNegative: true,
     allowZero: true
   });
+  const balanceMinor = normalizeBalanceForAccountType({
+    accountType: type,
+    balanceMinor: parsedBalanceMinor
+  });
+  const creditLimitMinor = requireOptionalMoney(payload, 'creditLimit');
 
   return {
     workspaceId: normalizeWorkspaceId(payload),
     accountId: normalizeOptionalText(payload.accountId, 120, 'accountId'),
     name,
     normalizedName: normalizeLookupName(name),
-    type: normalizeEnum(payload, 'type', ACCOUNT_TYPES, 'bank', 'Ask the user what type of account this is.'),
+    type,
     currency: normalizeCurrency(payload.currency || DEFAULT_CURRENCY),
     balanceMinor,
     balance: fromMinorUnits(balanceMinor),
     balanceWasProvided,
+    creditLimitMinor,
+    creditLimit: creditLimitMinor === null ? null : fromMinorUnits(creditLimitMinor),
     institution: normalizeOptionalText(payload.institution, 160, 'institution'),
     description: normalizeOptionalText(payload.description, 500, 'description'),
     active: payload.active === undefined ? true : Boolean(payload.active)
@@ -585,6 +754,133 @@ const validateSetAccountBalancePayload = (payload = {}) => {
   };
 };
 
+const validateCreateCreditPayload = (payload = {}) => {
+  const name = requireText(payload, 'name', {
+    maxLength: 160,
+    agentAction: 'Ask the user what display name they want to use for this credit, such as Personal Loan, Payroll Credit, Bank Credit, Store Credit, or Car Loan.'
+  });
+  const principalMinor = toMinorUnits(payload.amount, { field: 'amount' });
+  const plan = normalizeRepaymentPlan(payload, {
+    principalMinor,
+    allowMsi: false
+  });
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    name,
+    normalizedName: normalizeLookupName(name),
+    type: 'cash_credit',
+    amountMinor: principalMinor,
+    amount: fromMinorUnits(principalMinor),
+    currency: normalizeCurrency(payload.currency || DEFAULT_CURRENCY),
+    startDate: validateDateString(payload.startDate || payload.date, 'startDate'),
+    provider: requireText(payload, 'provider', {
+      maxLength: 160,
+      agentAction: 'Ask who issued the credit or loan, such as a bank, store, fintech, employer, or person.'
+    }),
+    ...normalizeAccountSelector({
+      accountId: payload.disbursementAccountId,
+      accountName: payload.disbursementAccountName
+    }),
+    ...plan,
+    description: normalizeOptionalText(payload.description, 500, 'description'),
+    notes: normalizeOptionalText(payload.notes, 500, 'notes'),
+    idempotencyKey: normalizeOptionalText(payload.idempotencyKey, 260, 'idempotencyKey')
+  };
+};
+
+const validateCreateCreditPurchasePayload = (payload = {}) => {
+  const name = requireText(payload, 'name', {
+    maxLength: 160,
+    agentAction: 'Ask the user what display name they want to use for this financed purchase, such as Phone, Laptop, Refrigerator, Motorcycle, Furniture, or Dental Treatment.'
+  });
+  const amountMinor = toMinorUnits(payload.amount, { field: 'amount' });
+  const plan = normalizeRepaymentPlan(payload, {
+    principalMinor: amountMinor,
+    allowMsi: true
+  });
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    name,
+    normalizedName: normalizeLookupName(name),
+    type: 'installment_purchase',
+    amountMinor,
+    amount: fromMinorUnits(amountMinor),
+    currency: normalizeCurrency(payload.currency || DEFAULT_CURRENCY),
+    date: validateDateString(payload.date, 'date'),
+    merchant: requireText(payload, 'merchant', {
+      maxLength: 160,
+      agentAction: 'Ask where the financed purchase was made before registering it.'
+    }),
+    provider: normalizeOptionalText(payload.provider || payload.financingProvider, 160, 'provider'),
+    ...normalizeCategorySelector(payload),
+    creditAccountId: normalizeOptionalText(payload.creditAccountId || payload.accountId, 120, 'creditAccountId'),
+    creditAccountName: normalizeOptionalText(payload.creditAccountName || payload.accountName, 160, 'creditAccountName'),
+    ...plan,
+    description: normalizeOptionalText(payload.description, 500, 'description'),
+    notes: normalizeOptionalText(payload.notes, 500, 'notes'),
+    idempotencyKey: normalizeOptionalText(payload.idempotencyKey, 260, 'idempotencyKey')
+  };
+};
+
+const validateRecordCreditPaymentPayload = (payload = {}) => {
+  const amountMinor = requireOptionalMoney(payload, 'amount', { allowZero: false });
+  const principalAmountMinor = requireOptionalMoney(payload, 'principalAmount');
+  const interestAmountMinor = requireOptionalMoney(payload, 'interestAmount');
+  const feeAmountMinor = requireOptionalMoney(payload, 'feeAmount');
+  const remainingPrincipalAfterPaymentMinor = requireOptionalMoney(payload, 'remainingPrincipalAfterPayment');
+  const installmentNumber = payload.installmentNumber === undefined || payload.installmentNumber === null || payload.installmentNumber === ''
+    ? null
+    : requirePositiveInteger(payload, 'installmentNumber', 'Ask which installment number was paid, or omit it to use the next unpaid installment.');
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    ...normalizeCreditSelector(payload),
+    installmentNumber,
+    date: validateNotFutureDate(validateDateString(payload.date, 'date'), 'date', {
+      agentAction: 'Use the actual date when the user made the payment. Do not use the installment dueDate unless the user says they actually paid on that date.'
+    }),
+    amountMinor,
+    amount: amountMinor === null ? null : fromMinorUnits(amountMinor),
+    paymentAccountId: normalizeOptionalText(payload.paymentAccountId || payload.accountId, 120, 'paymentAccountId'),
+    paymentAccountName: normalizeOptionalText(payload.paymentAccountName || payload.accountName, 160, 'paymentAccountName'),
+    principalAmountMinor,
+    principalAmount: principalAmountMinor === null ? null : fromMinorUnits(principalAmountMinor),
+    interestAmountMinor,
+    interestAmount: interestAmountMinor === null ? null : fromMinorUnits(interestAmountMinor),
+    feeAmountMinor: feeAmountMinor || 0,
+    feeAmount: fromMinorUnits(feeAmountMinor || 0),
+    remainingPrincipalAfterPaymentMinor,
+    remainingPrincipalAfterPayment: remainingPrincipalAfterPaymentMinor === null ? null : fromMinorUnits(remainingPrincipalAfterPaymentMinor),
+    description: normalizeOptionalText(payload.description, 500, 'description'),
+    notes: normalizeOptionalText(payload.notes, 500, 'notes'),
+    idempotencyKey: normalizeOptionalText(payload.idempotencyKey, 260, 'idempotencyKey')
+  };
+};
+
+const validateListCreditsPayload = (payload = {}) => {
+  const status = normalizeOptionalText(payload.status, 40, 'status').toLowerCase();
+
+  if (status && !CREDIT_STATUSES.has(status)) {
+    throw createAgentError({
+      code: 'invalid_field',
+      message: `status must be one of: ${Array.from(CREDIT_STATUSES).join(', ')}.`,
+      agentAction: 'Use active, paid, cancelled, or omit status to list active credits.',
+      details: {
+        field: 'status',
+        allowedValues: Array.from(CREDIT_STATUSES)
+      }
+    });
+  }
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    status: status || 'active',
+    includeInstallments: Boolean(payload.includeInstallments)
+  };
+};
+
 const validateListMovementsPayload = (payload = {}) => {
   const range = validateDateRange(getDateRangeForPeriod({
     period: payload.period,
@@ -629,13 +925,17 @@ module.exports = {
   normalizeLookupName,
   toMinorUnits,
   validateAddWorkspaceMemberPayload,
+  validateCreateCreditPayload,
+  validateCreateCreditPurchasePayload,
   validateCreateExpensePayload,
   validateCreateIncomePayload,
   validateCreateTransferPayload,
   validateCreateWorkspacePayload,
   validateListCategoriesPayload,
+  validateListCreditsPayload,
   validateListMovementsPayload,
   validateListWorkspaceMembersPayload,
+  validateRecordCreditPaymentPayload,
   validateSetAccountBalancePayload,
   validateUpsertAccountPayload,
   validateUpsertCategoryPayload,

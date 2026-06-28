@@ -114,6 +114,10 @@ upsert_account
 list_accounts
 upsert_payment_method
 list_payment_methods
+list_credits
+create_credit
+create_credit_purchase
+record_credit_payment
 create_expense
 create_income
 create_transfer
@@ -204,7 +208,6 @@ cash
 wallet
 credit_card
 investment
-loan
 other
 ```
 
@@ -228,6 +231,34 @@ other
 
 Si el usuario dice "saque $1,000 del cajero de BBVA", el agente debe modelarlo como transferencia de BBVA a una cuenta de tipo `cash`, por ejemplo Efectivo.
 
+`credit_card` representa una tarjeta real y su saldo/deuda. Los creditos y compras financiadas con calendario de pagos no se crean como cuenta publica `loan`; se registran con las tools de credito y el sistema crea la cuenta interna necesaria para controlar la deuda.
+
+## Creditos y compras financiadas
+
+Los creditos viven en:
+
+```txt
+financeWorkspaces/{workspaceId}/credits/{creditId}
+financeWorkspaces/{workspaceId}/credits/{creditId}/installments/{installmentId}
+```
+
+Tipos:
+
+```txt
+cash_credit
+installment_purchase
+```
+
+Reglas para el agente:
+
+- `create_expense`: compras normales pagadas de inmediato, incluso si se pagaron con tarjeta de credito.
+- `create_credit_purchase`: compras a meses, MSI, pagos, plazos o financiamiento.
+- `create_credit`: creditos/prestamos donde el usuario recibe dinero y queda una deuda.
+- `record_credit_payment`: pagos de creditos o compras financiadas ya registradas.
+- `create_transfer`: pagos generales de tarjeta de credito que no corresponden a un credito/plan registrado.
+
+No se deben asumir meses, fechas, intereses, comisiones, cuenta de pago, comercio ni proveedor. Si hay intereses, el agente debe obtener monto total a pagar, interes total, mensualidad exacta, desglose del pago o saldo restante, segun corresponda.
+
 ## Movimientos
 
 Todos los registros financieros viven en:
@@ -243,6 +274,9 @@ expense
 income
 transfer
 balance_adjustment
+credit_disbursement
+credit_purchase
+credit_payment
 ```
 
 Cada movimiento guarda `amountMinor` para evitar errores decimales y `amount` para lectura. Tambien guarda `lines` con impactos por cuenta:

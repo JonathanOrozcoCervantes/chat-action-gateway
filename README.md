@@ -123,6 +123,8 @@ OAuth solo identifica al usuario y emite access tokens con scopes soportados por
   "accounts:write",
   "payment_methods:read",
   "payment_methods:write",
+  "credits:read",
+  "credits:write",
   "movements:read",
   "expenses:write",
   "income:write",
@@ -152,7 +154,7 @@ Configuracion manual en ChatGPT, si la deteccion automatica no llena todo:
 - Token URL: `https://chat-action-gateway.web.app/oauth/token`
 - Registration URL: `https://chat-action-gateway.web.app/oauth/register`
 - Resource: `https://chat-action-gateway.web.app/mcp/finance`
-- Scopes: `workspaces:read workspaces:write members:read members:write categories:read categories:write accounts:read accounts:write payment_methods:read payment_methods:write movements:read expenses:write income:write transfers:write`
+- Scopes: `workspaces:read workspaces:write members:read members:write categories:read categories:write accounts:read accounts:write payment_methods:read payment_methods:write credits:read credits:write movements:read expenses:write income:write transfers:write`
 
 Tools disponibles:
 
@@ -166,6 +168,10 @@ Tools disponibles:
 - `list_accounts`: lista cuentas de un workspace.
 - `upsert_payment_method`: crea o actualiza un metodo de pago dentro de una cuenta.
 - `list_payment_methods`: lista metodos de pago de una cuenta.
+- `list_credits`: lista creditos y compras financiadas.
+- `create_credit`: registra creditos/prestamos donde el usuario recibe dinero y queda una deuda.
+- `create_credit_purchase`: registra compras a meses, MSI o financiamientos.
+- `record_credit_payment`: registra pagos de creditos o compras financiadas.
 - `create_expense`: registra un gasto y descuenta saldo de la cuenta.
 - `create_income`: registra un ingreso y suma saldo a la cuenta.
 - `create_transfer`: mueve dinero entre dos cuentas.
@@ -179,6 +185,8 @@ Las tools devuelven errores estructurados para agentes con `code`, `message`, `a
 Las cuentas nuevas requieren saldo actual explicito. Si el agente intenta crear una cuenta sin `balance`, la tool devuelve `initial_balance_required` para que pregunte al usuario el saldo actual, o confirme que quiere iniciar en `0`.
 
 Las categorias de gastos e ingresos son catalogo controlado por workspace, no texto libre improvisado en cada movimiento. Antes de registrar un gasto o ingreso, el agente debe usar una categoria existente por `categoryId` o `categoryName`. Si no existe, debe llamar `list_categories`, preguntar al usuario si quiere usar una existente o crear una nueva, y solo llamar `upsert_category` cuando el usuario confirme.
+
+Las compras normales pagadas de inmediato usan `create_expense`, incluso si se pagaron con tarjeta de credito. Las compras a meses, MSI, pagos o financiamiento usan `create_credit_purchase`. Los creditos donde entra dinero a una cuenta usan `create_credit`. Los pagos a esos creditos o compras financiadas usan `record_credit_payment`. Un pago general de tarjeta de credito que no corresponde a un credito/plan registrado se modela como `create_transfer` hacia la cuenta `credit_card`; si hubo intereses o comisiones, el agente debe preguntar montos exactos y registrarlos aparte como gasto.
 
 `list_movements` devuelve una pagina de resultados. Si `pagination.hasMore` es `true`, el agente debe decirle al usuario que hay mas movimientos y preguntarle si quiere ver la siguiente pagina. Para continuar, debe llamar otra vez `list_movements` con los mismos filtros y `cursor` igual a `pagination.nextCursor`.
 
@@ -194,6 +202,8 @@ Colecciones actuales:
 - `financeWorkspaces/{workspaceId}/categories/{categoryId}`
 - `financeWorkspaces/{workspaceId}/accounts/{accountId}`
 - `financeWorkspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}`
+- `financeWorkspaces/{workspaceId}/credits/{creditId}`
+- `financeWorkspaces/{workspaceId}/credits/{creditId}/installments/{installmentId}`
 - `financeWorkspaces/{workspaceId}/movements/{movementId}`
 - `financeWorkspaces/{workspaceId}/idempotencyKeys/{idempotencyHash}`
 - `actionLogs/{logId}`
@@ -217,8 +227,11 @@ Los movimientos viven en una coleccion unificada con `type`:
 - `income`
 - `transfer`
 - `balance_adjustment`
+- `credit_disbursement`
+- `credit_purchase`
+- `credit_payment`
 
-Cada movimiento guarda `lines` con los impactos por cuenta. Un gasto tiene una linea negativa, un ingreso una positiva, y una transferencia una negativa en origen y una positiva en destino.
+Cada movimiento guarda `lines` con los impactos por cuenta. Un gasto tiene una linea negativa, un ingreso una positiva, y una transferencia una negativa en origen y una positiva en destino. Los movimientos de credito separan desembolsos, compras financiadas y pagos para no mezclar pagos de capital con intereses/comisiones.
 
 Colecciones antiguas que ya no usa el codigo:
 

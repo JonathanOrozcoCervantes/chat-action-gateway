@@ -9,6 +9,8 @@ const FINANCE_SCOPES = [
   'accounts:write',
   'payment_methods:read',
   'payment_methods:write',
+  'credits:read',
+  'credits:write',
   'movements:read',
   'expenses:write',
   'income:write',
@@ -21,6 +23,7 @@ const READ_SCOPES = [
   'categories:read',
   'accounts:read',
   'payment_methods:read',
+  'credits:read',
   'movements:read'
 ];
 
@@ -28,6 +31,7 @@ const WRITE_SCOPES = [
   'accounts:write',
   'categories:write',
   'payment_methods:write',
+  'credits:write',
   'expenses:write',
   'income:write',
   'transfers:write'
