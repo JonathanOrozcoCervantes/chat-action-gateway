@@ -43,6 +43,32 @@ const MEMBER_ROLES = new Set([
   'admin'
 ]);
 
+const FINANCIAL_GOAL_TYPES = new Set([
+  'purchase',
+  'savings',
+  'debt_payoff',
+  'investment',
+  'retirement',
+  'emergency_fund',
+  'education',
+  'housing',
+  'travel',
+  'other'
+]);
+
+const FINANCIAL_GOAL_STATUSES = new Set([
+  'active',
+  'paused',
+  'completed',
+  'cancelled'
+]);
+
+const FINANCIAL_GOAL_PRIORITIES = new Set([
+  'low',
+  'medium',
+  'high'
+]);
+
 const MOVEMENT_TYPES = new Set([
   'expense',
   'income',
@@ -50,7 +76,10 @@ const MOVEMENT_TYPES = new Set([
   'balance_adjustment',
   'credit_disbursement',
   'credit_purchase',
-  'credit_payment'
+  'credit_payment',
+  'credit_disbursement_void',
+  'credit_purchase_void',
+  'credit_payment_void'
 ]);
 
 const CREDIT_STATUSES = new Set([
@@ -155,6 +184,28 @@ const requireEnum = (payload, field, allowedValues, agentAction) => {
         allowedValues: Array.from(allowedValues)
       }
     });
+  }
+
+  if (!allowedValues.has(value)) {
+    throw createAgentError({
+      code: 'invalid_field',
+      message: `${field} must be one of: ${Array.from(allowedValues).join(', ')}.`,
+      agentAction,
+      details: {
+        field,
+        allowedValues: Array.from(allowedValues)
+      }
+    });
+  }
+
+  return value;
+};
+
+const normalizeOptionalEnum = (payload, field, allowedValues, agentAction) => {
+  const value = normalizeOptionalText(payload[field], 80, field).toLowerCase();
+
+  if (!value) {
+    return undefined;
   }
 
   if (!allowedValues.has(value)) {
@@ -393,6 +444,14 @@ const requirePositiveInteger = (payload, field, agentAction) => {
   return value;
 };
 
+const requireOptionalPositiveInteger = (payload, field, agentAction) => {
+  if (payload[field] === undefined || payload[field] === null || payload[field] === '') {
+    return undefined;
+  }
+
+  return requirePositiveInteger(payload, field, agentAction);
+};
+
 const requireOptionalMoney = (payload, field, options = {}) => {
   if (payload[field] === undefined || payload[field] === null || payload[field] === '') {
     return null;
@@ -458,6 +517,44 @@ const normalizeCreditSelector = (payload) => ({
   creditId: normalizeOptionalText(payload.creditId, 120, 'creditId'),
   creditName: normalizeOptionalText(payload.creditName || payload.name, 160, 'creditName')
 });
+
+const normalizeTextArray = (payload, field, {
+  maxItems = 20,
+  maxLength = 80
+} = {}) => {
+  if (payload[field] === undefined || payload[field] === null) {
+    return undefined;
+  }
+
+  if (!Array.isArray(payload[field])) {
+    throw createAgentError({
+      code: 'invalid_field',
+      message: `${field} must be an array of text values.`,
+      agentAction: `Ask the user for ${field} as a short list, then retry.`,
+      details: {
+        field
+      }
+    });
+  }
+
+  if (payload[field].length > maxItems) {
+    throw createAgentError({
+      code: 'invalid_field',
+      message: `${field} cannot contain more than ${maxItems} items.`,
+      agentAction: `Ask the user to reduce ${field} and retry.`,
+      details: {
+        field,
+        maxItems
+      }
+    });
+  }
+
+  return Array.from(new Set(
+    payload[field]
+      .map((value) => normalizeOptionalText(value, maxLength, field))
+      .filter(Boolean)
+  ));
+};
 
 const normalizeRepaymentPlan = (payload, { principalMinor, allowMsi = false } = {}) => {
   const termMonths = requirePositiveInteger(
@@ -558,7 +655,55 @@ const validateCreateWorkspacePayload = (payload = {}) => {
   };
 };
 
-const validateAddWorkspaceMemberPayload = (payload = {}) => {
+const validateUpsertWorkspacePayload = (payload = {}) => {
+  const workspaceId = normalizeWorkspaceId(payload);
+  const name = hasOwnField(payload, 'name')
+    ? normalizeOptionalText(payload.name, 160, 'name')
+    : '';
+  const type = normalizeOptionalEnum(
+    payload,
+    'type',
+    WORKSPACE_TYPES,
+    'Ask whether this workspace is personal, household, or business.'
+  );
+  const currency = hasOwnField(payload, 'currency') ? normalizeCurrency(payload.currency || DEFAULT_CURRENCY) : undefined;
+  const description = hasOwnField(payload, 'description')
+    ? normalizeOptionalText(payload.description, 500, 'description')
+    : undefined;
+  const active = hasOwnField(payload, 'active') ? Boolean(payload.active) : undefined;
+
+  if (!workspaceId && !name) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'name is required when creating a workspace.',
+      agentAction: 'Ask the user for the workspace name before creating it.',
+      missingFields: ['name']
+    });
+  }
+
+  const hasUpdates = [name, type, currency, description, active].some((value) => value !== undefined && value !== '');
+
+  if (workspaceId && !hasUpdates) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'At least one workspace field is required when updating a workspace.',
+      agentAction: 'Ask the user what they want to change in this workspace, then retry.',
+      missingFields: ['name', 'type', 'currency', 'description', 'active']
+    });
+  }
+
+  return {
+    workspaceId,
+    name: name || undefined,
+    normalizedName: name ? normalizeLookupName(name) : undefined,
+    type: type || (!workspaceId ? 'personal' : undefined),
+    currency: currency || (!workspaceId ? DEFAULT_CURRENCY : undefined),
+    description,
+    active
+  };
+};
+
+const validateUpsertWorkspaceMemberPayload = (payload = {}) => {
   const memberUserId = normalizeOptionalText(payload.memberUserId, 120, 'memberUserId');
   const memberEmail = normalizeEmail(payload.memberEmail);
   const role = normalizeEnum(payload, 'role', MEMBER_ROLES, 'member', 'Ask whether the member should be viewer, member, or admin.');
@@ -587,6 +732,147 @@ const validateListWorkspaceMembersPayload = (payload = {}) => ({
   workspaceId: normalizeWorkspaceId(payload),
   includeInactive: Boolean(payload.includeInactive)
 });
+
+const hasOwnField = (payload, field) => Object.prototype.hasOwnProperty.call(payload, field);
+
+const normalizeOptionalMoneyUpdate = (payload, field) => {
+  if (!hasOwnField(payload, field)) {
+    return {
+      amountMinor: undefined,
+      amount: undefined
+    };
+  }
+
+  const amountMinor = requireOptionalMoney(payload, field);
+
+  return {
+    amountMinor,
+    amount: amountMinor === null ? null : fromMinorUnits(amountMinor)
+  };
+};
+
+const normalizeOptionalDateUpdate = (payload, field) => {
+  if (!hasOwnField(payload, field)) {
+    return undefined;
+  }
+
+  const value = normalizeOptionalText(payload[field], 20, field);
+
+  return value ? validateDateString(value, field) : null;
+};
+
+const normalizeOptionalPositiveIntegerUpdate = (payload, field, agentAction) => {
+  if (!hasOwnField(payload, field)) {
+    return undefined;
+  }
+
+  if (payload[field] === null || payload[field] === '') {
+    return null;
+  }
+
+  return requireOptionalPositiveInteger(payload, field, agentAction);
+};
+
+const validateListFinancialGoalsPayload = (payload = {}) => {
+  const type = normalizeOptionalEnum(
+    payload,
+    'type',
+    FINANCIAL_GOAL_TYPES,
+    'Use a supported goal type or omit type to list all goal types.'
+  );
+  const status = normalizeOptionalEnum(
+    payload,
+    'status',
+    FINANCIAL_GOAL_STATUSES,
+    'Use active, paused, completed, cancelled, or omit status to list all statuses.'
+  );
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    type: type || '',
+    status: status || '',
+    includeInactive: Boolean(payload.includeInactive)
+  };
+};
+
+const validateUpsertFinancialGoalPayload = (payload = {}) => {
+  const workspaceId = normalizeWorkspaceId(payload);
+  const goalId = normalizeOptionalText(payload.goalId, 120, 'goalId');
+  const name = hasOwnField(payload, 'name')
+    ? normalizeOptionalText(payload.name, 160, 'name')
+    : '';
+
+  if (!goalId && !name) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'name is required when goalId is omitted.',
+      agentAction: 'Ask the user for a short goal name, or call list_financial_goals and retry with the selected goalId.',
+      missingFields: ['name'],
+      suggestedTool: 'list_financial_goals'
+    });
+  }
+
+  const targetAmount = normalizeOptionalMoneyUpdate(payload, 'targetAmount');
+  const currentAmount = normalizeOptionalMoneyUpdate(payload, 'currentAmount');
+  const monthlyContribution = normalizeOptionalMoneyUpdate(payload, 'monthlyContribution');
+  const goal = {
+    workspaceId,
+    goalId,
+    name: name || undefined,
+    normalizedName: name ? normalizeLookupName(name) : undefined,
+    type: normalizeOptionalEnum(
+      payload,
+      'type',
+      FINANCIAL_GOAL_TYPES,
+      'Use one supported financial goal type, or omit type if unknown.'
+    ),
+    status: normalizeOptionalEnum(
+      payload,
+      'status',
+      FINANCIAL_GOAL_STATUSES,
+      'Use active, paused, completed, or cancelled.'
+    ),
+    priority: normalizeOptionalEnum(
+      payload,
+      'priority',
+      FINANCIAL_GOAL_PRIORITIES,
+      'Use low, medium, or high priority.'
+    ),
+    currency: hasOwnField(payload, 'currency') ? normalizeCurrency(payload.currency || DEFAULT_CURRENCY) : undefined,
+    targetAmountMinor: targetAmount.amountMinor,
+    targetAmount: targetAmount.amount,
+    currentAmountMinor: currentAmount.amountMinor,
+    currentAmount: currentAmount.amount,
+    monthlyContributionMinor: monthlyContribution.amountMinor,
+    monthlyContribution: monthlyContribution.amount,
+    targetDate: normalizeOptionalDateUpdate(payload, 'targetDate'),
+    targetAge: normalizeOptionalPositiveIntegerUpdate(
+      payload,
+      'targetAge',
+      'Ask the user for the target age as a positive whole number, or omit targetAge.'
+    ),
+    description: hasOwnField(payload, 'description') ? normalizeOptionalText(payload.description, 1000, 'description') : undefined,
+    motivation: hasOwnField(payload, 'motivation') ? normalizeOptionalText(payload.motivation, 1000, 'motivation') : undefined,
+    notes: hasOwnField(payload, 'notes') ? normalizeOptionalText(payload.notes, 1500, 'notes') : undefined,
+    tags: normalizeTextArray(payload, 'tags', { maxItems: 20, maxLength: 80 }),
+    active: hasOwnField(payload, 'active') ? Boolean(payload.active) : undefined
+  };
+
+  const hasUpdates = Object.entries(goal)
+    .filter(([field]) => !['workspaceId', 'goalId'].includes(field))
+    .some(([, value]) => value !== undefined);
+
+  if (goalId && !hasUpdates) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'At least one goal field is required when updating by goalId.',
+      agentAction: 'Ask the user what they want to change in this financial goal, then retry.',
+      missingFields: ['name', 'type', 'status', 'priority', 'targetAmount', 'targetDate', 'description']
+    });
+  }
+
+  return goal;
+};
 
 const validateUpsertCategoryPayload = (payload = {}) => {
   const name = requireText(payload, 'name', {
@@ -709,6 +995,8 @@ const normalizeMovementBase = (payload = {}) => {
   };
 };
 
+const normalizeMovementId = (payload) => normalizeOptionalText(payload.movementId || payload.documentId, 120, 'movementId');
+
 const validateCreateExpensePayload = (payload = {}) => ({
   ...normalizeMovementBase(payload),
   merchant: requireText(payload, 'merchant', {
@@ -719,10 +1007,20 @@ const validateCreateExpensePayload = (payload = {}) => ({
   ...normalizePaymentMethodSelector(payload)
 });
 
+const validateUpsertExpensePayload = (payload = {}) => ({
+  ...validateCreateExpensePayload(payload),
+  movementId: normalizeMovementId(payload)
+});
+
 const validateCreateIncomePayload = (payload = {}) => ({
   ...normalizeMovementBase(payload),
   sourceName: normalizeOptionalText(payload.sourceName, 160, 'sourceName'),
   ...normalizeAccountSelector(payload)
+});
+
+const validateUpsertIncomePayload = (payload = {}) => ({
+  ...validateCreateIncomePayload(payload),
+  movementId: normalizeMovementId(payload)
 });
 
 const validateCreateTransferPayload = (payload = {}) => ({
@@ -732,6 +1030,11 @@ const validateCreateTransferPayload = (payload = {}) => ({
   fromAccountName: normalizeOptionalText(payload.fromAccountName, 160, 'fromAccountName'),
   toAccountId: normalizeOptionalText(payload.toAccountId, 120, 'toAccountId'),
   toAccountName: normalizeOptionalText(payload.toAccountName, 160, 'toAccountName')
+});
+
+const validateUpsertTransferPayload = (payload = {}) => ({
+  ...validateCreateTransferPayload(payload),
+  movementId: normalizeMovementId(payload)
 });
 
 const validateSetAccountBalancePayload = (payload = {}) => {
@@ -881,6 +1184,111 @@ const validateListCreditsPayload = (payload = {}) => {
   };
 };
 
+const validateUpdateCreditMetadataOnlyPayload = (payload = {}) => {
+  const selector = {
+    creditId: normalizeOptionalText(payload.creditId, 120, 'creditId'),
+    creditName: normalizeOptionalText(payload.creditName, 160, 'creditName')
+  };
+  const name = hasOwnField(payload, 'name')
+    ? normalizeOptionalText(payload.name, 160, 'name')
+    : '';
+  const provider = hasOwnField(payload, 'provider')
+    ? normalizeOptionalText(payload.provider, 160, 'provider')
+    : undefined;
+  const description = hasOwnField(payload, 'description')
+    ? normalizeOptionalText(payload.description, 500, 'description')
+    : undefined;
+  const notes = hasOwnField(payload, 'notes')
+    ? normalizeOptionalText(payload.notes, 500, 'notes')
+    : undefined;
+  const active = hasOwnField(payload, 'active') ? Boolean(payload.active) : undefined;
+  const hasUpdates = [name, provider, description, notes, active].some((value) => value !== undefined && value !== '');
+
+  if (!selector.creditId && !selector.creditName) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'creditId or creditName is required.',
+      agentAction: 'Call list_credits, ask the user which credit or financed purchase to update, then retry with creditId.',
+      missingFields: ['creditId', 'creditName'],
+      suggestedTool: 'list_credits'
+    });
+  }
+
+  if (!hasUpdates) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'At least one editable credit field is required.',
+      agentAction: 'Ask the user what descriptive credit information they want to change. Amounts, terms, payment schedules, and already recorded payments are not edited by this tool.',
+      missingFields: ['name', 'provider', 'description', 'notes', 'active']
+    });
+  }
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    ...selector,
+    name: name || undefined,
+    normalizedName: name ? normalizeLookupName(name) : undefined,
+    provider,
+    description,
+    notes,
+    active
+  };
+};
+
+const validateVoidCreditPayload = (payload = {}) => {
+  const selector = normalizeCreditSelector(payload);
+
+  if (!selector.creditId && !selector.creditName) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'creditId or creditName is required.',
+      agentAction: 'Call list_credits, ask the user which credit or financed purchase to void, then retry with creditId.',
+      missingFields: ['creditId', 'creditName'],
+      suggestedTool: 'list_credits'
+    });
+  }
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    ...selector,
+    date: validateDateString(payload.date, 'date'),
+    reason: requireText(payload, 'reason', {
+      maxLength: 500,
+      agentAction: 'Ask the user why this credit or financed purchase should be voided. This reason is kept for audit history.'
+    }),
+    idempotencyKey: normalizeOptionalText(payload.idempotencyKey, 260, 'idempotencyKey')
+  };
+};
+
+const validateVoidCreditPaymentPayload = (payload = {}) => {
+  const paymentMovementId = normalizeOptionalText(
+    payload.paymentMovementId || payload.movementId || payload.documentId,
+    120,
+    'paymentMovementId'
+  );
+
+  if (!paymentMovementId) {
+    throw createAgentError({
+      code: 'missing_fields',
+      message: 'paymentMovementId is required.',
+      agentAction: 'Call list_movements with type=credit_payment, show the candidate payments to the user, ask which payment to void, then retry with paymentMovementId.',
+      missingFields: ['paymentMovementId'],
+      suggestedTool: 'list_movements'
+    });
+  }
+
+  return {
+    workspaceId: normalizeWorkspaceId(payload),
+    paymentMovementId,
+    date: validateDateString(payload.date, 'date'),
+    reason: requireText(payload, 'reason', {
+      maxLength: 500,
+      agentAction: 'Ask the user why this credit payment should be voided. This reason is kept for audit history.'
+    }),
+    idempotencyKey: normalizeOptionalText(payload.idempotencyKey, 260, 'idempotencyKey')
+  };
+};
+
 const validateListMovementsPayload = (payload = {}) => {
   const range = validateDateRange(getDateRangeForPeriod({
     period: payload.period,
@@ -924,20 +1332,25 @@ module.exports = {
   normalizeCurrency,
   normalizeLookupName,
   toMinorUnits,
-  validateAddWorkspaceMemberPayload,
   validateCreateCreditPayload,
   validateCreateCreditPurchasePayload,
-  validateCreateExpensePayload,
-  validateCreateIncomePayload,
-  validateCreateTransferPayload,
-  validateCreateWorkspacePayload,
   validateListCategoriesPayload,
   validateListCreditsPayload,
+  validateListFinancialGoalsPayload,
   validateListMovementsPayload,
   validateListWorkspaceMembersPayload,
   validateRecordCreditPaymentPayload,
   validateSetAccountBalancePayload,
+  validateUpdateCreditMetadataOnlyPayload,
   validateUpsertAccountPayload,
   validateUpsertCategoryPayload,
-  validateUpsertPaymentMethodPayload
+  validateUpsertExpensePayload,
+  validateUpsertFinancialGoalPayload,
+  validateUpsertIncomePayload,
+  validateUpsertPaymentMethodPayload,
+  validateUpsertTransferPayload,
+  validateUpsertWorkspaceMemberPayload,
+  validateUpsertWorkspacePayload,
+  validateVoidCreditPayload,
+  validateVoidCreditPaymentPayload
 };

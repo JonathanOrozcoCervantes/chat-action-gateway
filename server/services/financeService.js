@@ -6,20 +6,25 @@ const {
   toMinorUnits,
   validateCreateCreditPayload,
   validateCreateCreditPurchasePayload,
-  validateCreateExpensePayload,
-  validateCreateIncomePayload,
-  validateCreateTransferPayload,
-  validateCreateWorkspacePayload,
-  validateAddWorkspaceMemberPayload,
   validateListCategoriesPayload,
   validateListCreditsPayload,
+  validateListFinancialGoalsPayload,
   validateListMovementsPayload,
   validateListWorkspaceMembersPayload,
   validateRecordCreditPaymentPayload,
   validateSetAccountBalancePayload,
+  validateUpdateCreditMetadataOnlyPayload,
   validateUpsertAccountPayload,
   validateUpsertCategoryPayload,
-  validateUpsertPaymentMethodPayload
+  validateUpsertExpensePayload,
+  validateUpsertFinancialGoalPayload,
+  validateUpsertIncomePayload,
+  validateUpsertPaymentMethodPayload,
+  validateUpsertTransferPayload,
+  validateUpsertWorkspaceMemberPayload,
+  validateUpsertWorkspacePayload,
+  validateVoidCreditPayload,
+  validateVoidCreditPaymentPayload
 } = require('../validators/financeValidator');
 const { createAgentError } = require('../utils/agentError');
 const { hashValue, randomToken } = require('../utils/security');
@@ -133,6 +138,39 @@ const summarizeCreditForResponse = (credit) => ({
   merchant: credit.merchant || ''
 });
 
+const summarizeFinancialGoalForResponse = (goal) => {
+  const targetAmountMinor = goal.targetAmountMinor ?? null;
+  const currentAmountMinor = goal.currentAmountMinor ?? null;
+  const progressPercent = targetAmountMinor && targetAmountMinor > 0 && currentAmountMinor !== null
+    ? Number(Math.min(100, Math.max(0, (currentAmountMinor / targetAmountMinor) * 100)).toFixed(2))
+    : null;
+
+  return {
+    goalId: goal.goalId || goal.id,
+    name: goal.name,
+    type: goal.type,
+    status: goal.status,
+    priority: goal.priority,
+    currency: goal.currency,
+    targetAmount: goal.targetAmount ?? null,
+    targetAmountMinor,
+    currentAmount: goal.currentAmount ?? null,
+    currentAmountMinor,
+    monthlyContribution: goal.monthlyContribution ?? null,
+    monthlyContributionMinor: goal.monthlyContributionMinor ?? null,
+    targetDate: goal.targetDate ?? null,
+    targetAge: goal.targetAge ?? null,
+    progressPercent,
+    description: goal.description || '',
+    motivation: goal.motivation || '',
+    notes: goal.notes || '',
+    tags: goal.tags || [],
+    active: goal.active !== false,
+    createdAt: goal.createdAt,
+    updatedAt: goal.updatedAt
+  };
+};
+
 const encodeMovementCursor = (cursor) => Buffer
   .from(JSON.stringify(cursor))
   .toString('base64url');
@@ -221,7 +259,11 @@ const summarizeMovementForResponse = (movement) => ({
   interestAmountMinor: movement.interestAmountMinor ?? null,
   feeAmount: movement.feeAmount ?? null,
   feeAmountMinor: movement.feeAmountMinor ?? null,
-  lines: movement.lines || []
+  lines: movement.lines || [],
+  originalMovementId: movement.originalMovementId || '',
+  originalMovementIds: movement.originalMovementIds || [],
+  voided: movement.voided === true,
+  voidReason: movement.voidReason || ''
 });
 
 class FinanceService {
@@ -724,20 +766,50 @@ class FinanceService {
     return installments.find((item) => item.status !== 'paid') || null;
   }
 
-  async createWorkspace({ userId, authContext, payload }) {
+  async upsertWorkspace({ userId, authContext, payload }) {
     ensureScope(authContext, 'workspaces:write');
-    const normalizedPayload = validateCreateWorkspacePayload(payload);
-    const result = await financeRepository.createWorkspace({
+    const normalizedPayload = validateUpsertWorkspacePayload(payload);
+
+    if (!normalizedPayload.workspaceId) {
+      const result = await financeRepository.createWorkspace({
+        userId,
+        payload: normalizedPayload
+      });
+      const workspace = await financeRepository.getWorkspace(result.workspaceId);
+
+      return {
+        ok: true,
+        action: 'upsert_workspace',
+        workspaceId: result.workspaceId,
+        created: true,
+        workspace
+      };
+    }
+
+    const workspace = await this.resolveWorkspace({
       userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'workspaces:write',
+      suggestedTool: 'list_workspaces'
+    });
+
+    const result = await financeRepository.updateWorkspace({
+      workspaceId: workspace.workspaceId,
       payload: normalizedPayload
     });
-    const workspace = await financeRepository.getWorkspace(result.workspaceId);
+    const updatedWorkspace = await financeRepository.getWorkspace(result.workspaceId);
 
     return {
       ok: true,
-      action: 'create_workspace',
+      action: 'upsert_workspace',
       workspaceId: result.workspaceId,
-      workspace
+      created: false,
+      workspace: updatedWorkspace
     };
   }
 
@@ -765,9 +837,9 @@ class FinanceService {
     };
   }
 
-  async addWorkspaceMember({ userId, authContext, payload }) {
+  async upsertWorkspaceMember({ userId, authContext, payload }) {
     ensureScope(authContext, 'members:write');
-    const normalizedPayload = validateAddWorkspaceMemberPayload(payload);
+    const normalizedPayload = validateUpsertWorkspaceMemberPayload(payload);
     const workspace = await this.resolveWorkspace({
       userId,
       workspaceId: normalizedPayload.workspaceId
@@ -789,7 +861,7 @@ class FinanceService {
         statusCode: 404,
         code: 'member_user_not_found',
         message: 'The user to add was not found.',
-        agentAction: 'Tell the user that the member must first connect this MCP with Google so their Firebase account exists. After that, retry add_workspace_member using memberEmail.',
+          agentAction: 'Tell the user that the member must first connect this MCP with Google so their Firebase account exists. After that, retry upsert_workspace_member using memberEmail.',
         missingFields: ['memberEmail'],
         details: {
           memberUserId: normalizedPayload.memberUserId,
@@ -823,7 +895,7 @@ class FinanceService {
 
     return {
       ok: true,
-      action: 'add_workspace_member',
+      action: 'upsert_workspace_member',
       workspaceId: workspace.workspaceId,
       workspace: {
         workspaceId: workspace.workspaceId,
@@ -866,6 +938,120 @@ class FinanceService {
       },
       count: members.length,
       members
+    };
+  }
+
+  async listFinancialGoals({ userId, authContext, payload = {} }) {
+    ensureScope(authContext, 'goals:read');
+    const normalizedPayload = validateListFinancialGoalsPayload(payload);
+    const workspace = await this.resolveWorkspace({
+      userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'goals:read'
+    });
+
+    const goals = await financeRepository.listFinancialGoals({
+      workspaceId: workspace.workspaceId,
+      type: normalizedPayload.type,
+      status: normalizedPayload.status,
+      includeInactive: normalizedPayload.includeInactive
+    });
+
+    return {
+      ok: true,
+      action: 'list_financial_goals',
+      workspaceId: workspace.workspaceId,
+      type: normalizedPayload.type,
+      status: normalizedPayload.status,
+      count: goals.length,
+      goals: goals.map(summarizeFinancialGoalForResponse)
+    };
+  }
+
+  async upsertFinancialGoal({ userId, authContext, payload }) {
+    ensureScope(authContext, 'goals:write');
+    const normalizedPayload = validateUpsertFinancialGoalPayload(payload);
+    const workspace = await this.resolveWorkspace({
+      userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'goals:write',
+      suggestedTool: 'list_financial_goals'
+    });
+
+    if (normalizedPayload.goalId) {
+      const existingGoal = await financeRepository.getFinancialGoal({
+        workspaceId: workspace.workspaceId,
+        goalId: normalizedPayload.goalId
+      });
+
+      if (!existingGoal) {
+        throw createAgentError({
+          code: 'financial_goal_not_found',
+          message: 'The goalId provided for update does not exist.',
+          agentAction: 'Call list_financial_goals and ask the user which existing financial goal to update. To create a new goal, omit goalId and provide name.',
+          suggestedTool: 'list_financial_goals',
+          details: {
+            workspaceId: workspace.workspaceId,
+            goalId: normalizedPayload.goalId
+          }
+        });
+      }
+    }
+
+    if (!normalizedPayload.goalId && normalizedPayload.normalizedName) {
+      const matches = await financeRepository.findFinancialGoalsByNormalizedName({
+        workspaceId: workspace.workspaceId,
+        normalizedName: normalizedPayload.normalizedName
+      });
+
+      if (matches.length > 1) {
+        throw createAgentError({
+          code: 'ambiguous_financial_goal',
+          message: `More than one financial goal matches "${normalizedPayload.name}".`,
+          agentAction: 'Call list_financial_goals, show the matching goals to the user, ask which one they want to update, then retry with goalId.',
+          suggestedTool: 'list_financial_goals',
+          details: {
+            workspaceId: workspace.workspaceId,
+            name: normalizedPayload.name,
+            matches: matches.map(({ goalId, name, type, status, targetDate }) => ({
+              goalId,
+              name,
+              type,
+              status,
+              targetDate: targetDate || null
+            }))
+          }
+        });
+      }
+    }
+
+    const result = await financeRepository.upsertFinancialGoal({
+      workspaceId: workspace.workspaceId,
+      userId,
+      payload: normalizedPayload
+    });
+    const goal = await financeRepository.getFinancialGoal({
+      workspaceId: workspace.workspaceId,
+      goalId: result.goalId
+    });
+
+    return {
+      ok: true,
+      action: 'upsert_financial_goal',
+      workspaceId: workspace.workspaceId,
+      goalId: result.goalId,
+      created: result.created,
+      goal: summarizeFinancialGoalForResponse(goal)
     };
   }
 
@@ -1149,6 +1335,63 @@ class FinanceService {
           : undefined,
         installments: normalizedPayload.includeInstallments ? credit.installments || [] : undefined
       }))
+    };
+  }
+
+  async updateCreditMetadataOnly({ userId, authContext, payload }) {
+    ensureScope(authContext, 'credits:write');
+    const normalizedPayload = validateUpdateCreditMetadataOnlyPayload(payload);
+    const workspace = await this.resolveWorkspace({
+      userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'credits:write',
+      suggestedTool: 'list_credits'
+    });
+
+    const credit = await this.resolveCredit({
+      workspaceId: workspace.workspaceId,
+      creditId: normalizedPayload.creditId,
+      creditName: normalizedPayload.creditName,
+      requireActive: false
+    });
+
+    const result = await financeRepository.updateCreditMetadataOnly({
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      payload: normalizedPayload
+    });
+    const updatedCredit = await financeRepository.getCredit({
+      workspaceId: workspace.workspaceId,
+      creditId: result.creditId,
+      includeInstallments: true
+    });
+
+    await financeRepository.createActionLog({
+      action: 'update_credit_metadata_only',
+      workspaceId: workspace.workspaceId,
+      userId,
+      status: 'success',
+      creditId: credit.creditId,
+      request: {
+        creditId: credit.creditId,
+        updates: normalizedPayload
+      }
+    });
+
+    return {
+      ok: true,
+      action: 'update_credit_metadata_only',
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      credit: {
+        ...summarizeCreditForResponse(updatedCredit),
+        installments: updatedCredit.installments || []
+      }
     };
   }
 
@@ -1850,9 +2093,601 @@ class FinanceService {
     };
   }
 
-  async createExpense({ userId, authContext, payload, metadata = {} }) {
+  async ensureCreditCanBeVoided({ workspaceId, credit }) {
+    const paymentMovements = await financeRepository.listCreditMovementsByType({
+      workspaceId,
+      creditId: credit.creditId,
+      type: 'credit_payment',
+      limit: 100
+    });
+    const activePayments = paymentMovements.filter((movement) => movement.voided !== true);
+
+    if (activePayments.length) {
+      throw createAgentError({
+        code: 'credit_has_active_payments',
+        message: 'This credit or financed purchase has active payments and cannot be voided directly.',
+        agentAction: 'Void the related payments first with void_credit_payment, then retry this void tool. Show the active payment movement IDs to the user and ask which payments should be voided.',
+        suggestedTool: 'void_credit_payment',
+        details: {
+          creditId: credit.creditId,
+          activePayments: activePayments.map((movement) => ({
+            movementId: movement.movementId,
+            date: movement.date,
+            amount: movement.amount,
+            principalAmount: movement.principalAmount,
+            installmentNumber: movement.installmentNumber || null,
+            description: movement.description || ''
+          }))
+        }
+      });
+    }
+
+    if (Number(credit.paidTotalMinor || 0) > 0) {
+      throw createAgentError({
+        code: 'credit_has_payment_history',
+        message: 'This credit or financed purchase has payment totals recorded and cannot be voided directly.',
+        agentAction: 'Inspect list_credits with includeInstallments=true and list_movements with type=credit_payment. Void related payments first with void_credit_payment. If payment movements are missing, tell the user this credit needs manual review before cancellation.',
+        suggestedTool: 'list_credits',
+        details: {
+          creditId: credit.creditId,
+          paidTotal: credit.paidTotal,
+          paidTotalMinor: credit.paidTotalMinor
+        }
+      });
+    }
+  }
+
+  async voidCreditRecord({
+    userId,
+    authContext,
+    payload,
+    expectedCreditType,
+    sourceMovementType,
+    voidMovementType,
+    action,
+    metadata = {}
+  }) {
+    ensureScope(authContext, 'credits:write');
+    const normalizedPayload = validateVoidCreditPayload(payload);
+    const workspace = await this.resolveWorkspace({
+      userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'credits:write',
+      suggestedTool: 'list_credits'
+    });
+
+    const credit = await this.resolveCredit({
+      workspaceId: workspace.workspaceId,
+      creditId: normalizedPayload.creditId,
+      creditName: normalizedPayload.creditName,
+      requireActive: false
+    });
+
+    if (credit.type !== expectedCreditType) {
+      throw createAgentError({
+        code: 'credit_type_mismatch',
+        message: `This tool expects a credit of type ${expectedCreditType}, but the selected credit is ${credit.type}.`,
+        agentAction: expectedCreditType === 'cash_credit'
+          ? 'Use void_credit_purchase for financed purchases, or call list_credits and ask the user which credit they mean.'
+          : 'Use void_credit for cash credits/loans, or call list_credits and ask the user which financed purchase they mean.',
+        suggestedTool: expectedCreditType === 'cash_credit' ? 'void_credit_purchase' : 'void_credit',
+        details: {
+          creditId: credit.creditId,
+          expectedCreditType,
+          actualCreditType: credit.type
+        }
+      });
+    }
+
+    if (credit.status === 'cancelled' || credit.voided === true) {
+      throw createAgentError({
+        code: 'credit_already_voided',
+        message: 'This credit or financed purchase is already cancelled/voided.',
+        agentAction: 'Do not retry the void action. Show the user the current credit status from list_credits.',
+        suggestedTool: 'list_credits',
+        details: {
+          creditId: credit.creditId,
+          status: credit.status
+        }
+      });
+    }
+
+    await this.ensureCreditCanBeVoided({
+      workspaceId: workspace.workspaceId,
+      credit
+    });
+
+    const originMovements = await financeRepository.listCreditMovementsByType({
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      type: sourceMovementType,
+      limit: 10
+    });
+    const activeOriginMovements = originMovements.filter((movement) => movement.voided !== true);
+
+    if (!activeOriginMovements.length) {
+      throw createAgentError({
+        code: 'credit_origin_movement_not_found',
+        message: 'The original credit movement could not be found, so the credit cannot be voided automatically.',
+        agentAction: 'Tell the user this credit needs manual review because its original accounting movement is missing.',
+        suggestedTool: 'list_movements',
+        details: {
+          creditId: credit.creditId,
+          expectedMovementType: sourceMovementType
+        }
+      });
+    }
+
+    const liabilityAccount = await financeRepository.getAccount({
+      workspaceId: workspace.workspaceId,
+      accountId: credit.liabilityAccountId
+    });
+
+    if (!liabilityAccount) {
+      throw createAgentError({
+        code: 'credit_liability_account_not_found',
+        message: 'The liability account linked to this credit no longer exists.',
+        agentAction: 'Tell the user this credit needs manual review because its linked debt account is missing.',
+        details: {
+          creditId: credit.creditId,
+          liabilityAccountId: credit.liabilityAccountId
+        }
+      });
+    }
+
+    const amountMinor = Number(credit.amountMinor || 0);
+    const accountDeltas = [
+      {
+        accountId: liabilityAccount.accountId,
+        deltaMinor: amountMinor
+      }
+    ];
+    const lines = [
+      {
+        accountId: liabilityAccount.accountId,
+        accountName: liabilityAccount.name,
+        amountMinor,
+        amount: toAmount(amountMinor),
+        direction: 'debt_reversal'
+      }
+    ];
+
+    if (expectedCreditType === 'cash_credit') {
+      const disbursementAccount = await financeRepository.getAccount({
+        workspaceId: workspace.workspaceId,
+        accountId: credit.disbursementAccountId
+      });
+
+      if (!disbursementAccount) {
+        throw createAgentError({
+          code: 'credit_disbursement_account_not_found',
+          message: 'The account that received this credit no longer exists.',
+          agentAction: 'Tell the user this credit needs manual review because the original disbursement account is missing.',
+          details: {
+            creditId: credit.creditId,
+            disbursementAccountId: credit.disbursementAccountId
+          }
+        });
+      }
+
+      accountDeltas.push({
+        accountId: disbursementAccount.accountId,
+        deltaMinor: -amountMinor
+      });
+      lines.push({
+        accountId: disbursementAccount.accountId,
+        accountName: disbursementAccount.name,
+        amountMinor: -amountMinor,
+        amount: toAmount(-amountMinor),
+        direction: 'disbursement_reversal'
+      });
+    }
+
+    const idempotencyKey = normalizeIdempotencyKey(normalizedPayload.idempotencyKey, action);
+    const voidMovement = {
+      type: voidMovementType,
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      creditName: credit.name,
+      amountMinor,
+      amount: toAmount(amountMinor),
+      currency: credit.currency,
+      date: normalizedPayload.date,
+      category: voidMovementType,
+      description: `Void ${credit.name}`,
+      notes: normalizedPayload.reason,
+      voidReason: normalizedPayload.reason,
+      originalMovementIds: activeOriginMovements.map((movement) => movement.movementId),
+      accountId: liabilityAccount.accountId,
+      accountName: liabilityAccount.name,
+      lines,
+      source: 'chat-action-gateway-mcp',
+      authType: 'firebase-google-oauth',
+      metadata
+    };
+    const idempotencyScopeDate = voidMovement.date || '';
+    const idempotencyHash = hashValue(`${action}:${idempotencyScopeDate}:${idempotencyKey}`);
+    const installmentIds = Array.isArray(credit.installments)
+      ? credit.installments.map((installment) => installment.installmentId).filter(Boolean)
+      : [];
+    const deactivateAccountIds = liabilityAccount.internal === true ? [liabilityAccount.accountId] : [];
+    const result = await financeRepository.voidCreditWithReversal({
+      workspaceId: workspace.workspaceId,
+      userId,
+      creditId: credit.creditId,
+      expectedCreditType,
+      originalMovementIds: activeOriginMovements.map((movement) => movement.movementId),
+      installmentIds,
+      accountDeltas,
+      voidMovement,
+      voidReason: normalizedPayload.reason,
+      deactivateAccountIds,
+      idempotencyKey,
+      idempotencyHash,
+      idempotencyScopeDate,
+      action
+    });
+
+    await financeRepository.createActionLog({
+      action,
+      workspaceId: workspace.workspaceId,
+      userId,
+      status: 'success',
+      documentId: result.movementId,
+      creditId: credit.creditId,
+      idempotencyHash,
+      idempotencyScopeDate,
+      request: {
+        credit: summarizeCreditForResponse(credit),
+        reason: normalizedPayload.reason,
+        idempotencyKey
+      }
+    });
+
+    const updatedCredit = await financeRepository.getCredit({
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      includeInstallments: true
+    });
+
+    return {
+      ok: true,
+      action,
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      movementId: result.movementId,
+      documentId: result.movementId,
+      idempotencyKey,
+      credit: {
+        ...summarizeCreditForResponse(updatedCredit),
+        installments: updatedCredit.installments || []
+      },
+      voidMovement: summarizeMovementForResponse(voidMovement),
+      affectedAccounts: await Promise.all(
+        accountDeltas.map((delta) => financeRepository.getAccount({
+          workspaceId: workspace.workspaceId,
+          accountId: delta.accountId
+        }))
+      )
+    };
+  }
+
+  async voidCredit({ userId, authContext, payload, metadata = {} }) {
+    return this.voidCreditRecord({
+      userId,
+      authContext,
+      payload,
+      expectedCreditType: 'cash_credit',
+      sourceMovementType: 'credit_disbursement',
+      voidMovementType: 'credit_disbursement_void',
+      action: 'void_credit',
+      metadata
+    });
+  }
+
+  async voidCreditPurchase({ userId, authContext, payload, metadata = {} }) {
+    return this.voidCreditRecord({
+      userId,
+      authContext,
+      payload,
+      expectedCreditType: 'installment_purchase',
+      sourceMovementType: 'credit_purchase',
+      voidMovementType: 'credit_purchase_void',
+      action: 'void_credit_purchase',
+      metadata
+    });
+  }
+
+  async voidCreditPayment({ userId, authContext, payload, metadata = {} }) {
+    ensureScope(authContext, 'credits:write');
+    const normalizedPayload = validateVoidCreditPaymentPayload(payload);
+    const workspace = await this.resolveWorkspace({
+      userId,
+      workspaceId: normalizedPayload.workspaceId
+    });
+
+    await this.ensureWorkspaceScope({
+      userId,
+      workspace,
+      requiredScope: 'credits:write',
+      suggestedTool: 'list_movements'
+    });
+
+    const paymentMovement = await financeRepository.getMovement({
+      workspaceId: workspace.workspaceId,
+      movementId: normalizedPayload.paymentMovementId
+    });
+
+    if (!paymentMovement || paymentMovement.active === false) {
+      throw createAgentError({
+        code: 'movement_not_found',
+        message: 'The paymentMovementId does not exist.',
+        agentAction: 'Call list_movements with type=credit_payment, ask the user which payment to void, then retry with paymentMovementId.',
+        suggestedTool: 'list_movements',
+        details: {
+          paymentMovementId: normalizedPayload.paymentMovementId
+        }
+      });
+    }
+
+    if (paymentMovement.type !== 'credit_payment') {
+      throw createAgentError({
+        code: 'movement_type_mismatch',
+        message: `Movement ${normalizedPayload.paymentMovementId} is type ${paymentMovement.type}, not credit_payment.`,
+        agentAction: 'Call list_movements with type=credit_payment, ask the user which credit payment to void, then retry with the correct paymentMovementId.',
+        suggestedTool: 'list_movements',
+        details: {
+          paymentMovementId: normalizedPayload.paymentMovementId,
+          actualType: paymentMovement.type
+        }
+      });
+    }
+
+    if (paymentMovement.voided === true) {
+      throw createAgentError({
+        code: 'credit_payment_already_voided',
+        message: 'This credit payment has already been voided.',
+        agentAction: 'Do not retry the void action. Show the user the existing void status from list_movements.',
+        suggestedTool: 'list_movements',
+        details: {
+          paymentMovementId: normalizedPayload.paymentMovementId,
+          voidMovementId: paymentMovement.voidMovementId || ''
+        }
+      });
+    }
+
+    const credit = await financeRepository.getCredit({
+      workspaceId: workspace.workspaceId,
+      creditId: paymentMovement.creditId,
+      includeInstallments: true
+    });
+
+    if (!credit) {
+      throw createAgentError({
+        code: 'credit_not_found',
+        message: 'The credit linked to this payment does not exist.',
+        agentAction: 'Tell the user this payment needs manual review because its linked credit is missing.',
+        details: {
+          paymentMovementId: normalizedPayload.paymentMovementId,
+          creditId: paymentMovement.creditId || ''
+        }
+      });
+    }
+
+    if (credit.status === 'cancelled' || credit.voided === true) {
+      throw createAgentError({
+        code: 'credit_already_voided',
+        message: 'The credit linked to this payment is already cancelled/voided.',
+        agentAction: 'Do not void this payment automatically. Show the user the credit status and movement details; this needs manual review to avoid reviving a cancelled credit.',
+        suggestedTool: 'list_credits',
+        details: {
+          creditId: credit.creditId,
+          status: credit.status
+        }
+      });
+    }
+
+    const paymentAccount = await financeRepository.getAccount({
+      workspaceId: workspace.workspaceId,
+      accountId: paymentMovement.fromAccountId
+    });
+    const liabilityAccount = await financeRepository.getAccount({
+      workspaceId: workspace.workspaceId,
+      accountId: paymentMovement.toAccountId
+    });
+
+    if (!paymentAccount || !liabilityAccount) {
+      throw createAgentError({
+        code: 'credit_payment_account_not_found',
+        message: 'One of the accounts linked to this credit payment no longer exists.',
+        agentAction: 'Tell the user this payment needs manual review because its payment or debt account is missing.',
+        details: {
+          paymentMovementId: normalizedPayload.paymentMovementId,
+          paymentAccountId: paymentMovement.fromAccountId || '',
+          liabilityAccountId: paymentMovement.toAccountId || ''
+        }
+      });
+    }
+
+    const amountMinor = Number(paymentMovement.amountMinor || 0);
+    const principalAmountMinor = Number(paymentMovement.principalAmountMinor || 0);
+    const interestAmountMinor = Number(paymentMovement.interestAmountMinor || 0);
+    const feeAmountMinor = Number(paymentMovement.feeAmountMinor || 0);
+    const nextOutstandingMinor = Number(credit.outstandingPrincipalMinor || 0) + principalAmountMinor;
+    const paidPrincipalMinor = Math.max(0, Number(credit.paidPrincipalMinor || 0) - principalAmountMinor);
+    const paidInterestMinor = Math.max(0, Number(credit.paidInterestMinor || 0) - interestAmountMinor);
+    const paidFeesMinor = Math.max(0, Number(credit.paidFeesMinor || 0) - feeAmountMinor);
+    const paidTotalMinor = Math.max(0, Number(credit.paidTotalMinor || 0) - amountMinor);
+    const creditUpdates = {
+      outstandingPrincipalMinor: nextOutstandingMinor,
+      outstandingPrincipal: toAmount(nextOutstandingMinor),
+      paidPrincipalMinor,
+      paidPrincipal: toAmount(paidPrincipalMinor),
+      paidInterestMinor,
+      paidInterest: toAmount(paidInterestMinor),
+      paidFeesMinor,
+      paidFees: toAmount(paidFeesMinor),
+      paidTotalMinor,
+      paidTotal: toAmount(paidTotalMinor),
+      status: nextOutstandingMinor > 0 ? 'active' : credit.status,
+      ...(nextOutstandingMinor > 0 ? { paidDate: '' } : {})
+    };
+    const installment = Array.isArray(credit.installments)
+      ? credit.installments.find((item) => item.installmentId === paymentMovement.installmentId)
+      : null;
+    let installmentUpdates = {};
+
+    if (installment) {
+      const nextPaidAmountMinor = Math.max(0, Number(installment.paidAmountMinor || 0) - amountMinor);
+      const nextPrincipalPaidMinor = Math.max(0, Number(installment.principalPaidMinor || 0) - principalAmountMinor);
+      const nextInterestPaidMinor = Math.max(0, Number(installment.interestPaidMinor || 0) - interestAmountMinor);
+      const nextFeePaidMinor = Math.max(0, Number(installment.feePaidMinor || 0) - feeAmountMinor);
+      const scheduledPaymentMinor = Number(installment.scheduledPaymentMinor || 0);
+      const nextStatus = nextPaidAmountMinor <= 0
+        ? 'pending'
+        : nextPaidAmountMinor >= scheduledPaymentMinor ? 'paid' : 'partial';
+
+      installmentUpdates = {
+        status: nextStatus,
+        paidDate: nextStatus === 'paid' ? installment.paidDate : '',
+        paidAmountMinor: nextPaidAmountMinor,
+        paidAmount: toAmount(nextPaidAmountMinor),
+        principalPaidMinor: nextPrincipalPaidMinor,
+        principalPaid: toAmount(nextPrincipalPaidMinor),
+        interestPaidMinor: nextInterestPaidMinor,
+        interestPaid: toAmount(nextInterestPaidMinor),
+        feePaidMinor: nextFeePaidMinor,
+        feePaid: toAmount(nextFeePaidMinor)
+      };
+    }
+
+    const idempotencyKey = normalizeIdempotencyKey(normalizedPayload.idempotencyKey, 'void-credit-payment');
+    const voidMovement = {
+      type: 'credit_payment_void',
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      creditName: credit.name,
+      installmentId: paymentMovement.installmentId || '',
+      installmentNumber: paymentMovement.installmentNumber || null,
+      amountMinor,
+      amount: toAmount(amountMinor),
+      principalAmountMinor,
+      principalAmount: toAmount(principalAmountMinor),
+      interestAmountMinor,
+      interestAmount: toAmount(interestAmountMinor),
+      feeAmountMinor,
+      feeAmount: toAmount(feeAmountMinor),
+      currency: credit.currency,
+      date: normalizedPayload.date,
+      category: 'credit_payment_void',
+      description: `Void payment for ${credit.name}`,
+      notes: normalizedPayload.reason,
+      voidReason: normalizedPayload.reason,
+      originalMovementId: normalizedPayload.paymentMovementId,
+      fromAccountId: liabilityAccount.accountId,
+      fromAccountName: liabilityAccount.name,
+      toAccountId: paymentAccount.accountId,
+      toAccountName: paymentAccount.name,
+      lines: [
+        createLine({
+          account: paymentAccount,
+          amountMinor,
+          direction: 'payment_reversal'
+        }),
+        {
+          accountId: liabilityAccount.accountId,
+          accountName: liabilityAccount.name,
+          amountMinor: -principalAmountMinor,
+          amount: toAmount(-principalAmountMinor),
+          direction: 'debt_reincrease'
+        }
+      ],
+      source: 'chat-action-gateway-mcp',
+      authType: 'firebase-google-oauth',
+      metadata
+    };
+    const accountDeltas = [
+      {
+        accountId: paymentAccount.accountId,
+        deltaMinor: amountMinor
+      },
+      {
+        accountId: liabilityAccount.accountId,
+        deltaMinor: -principalAmountMinor
+      }
+    ];
+    const idempotencyScopeDate = voidMovement.date || '';
+    const idempotencyHash = hashValue(`void_credit_payment:${idempotencyScopeDate}:${idempotencyKey}`);
+    const result = await financeRepository.voidCreditPaymentWithReversal({
+      workspaceId: workspace.workspaceId,
+      userId,
+      paymentMovementId: normalizedPayload.paymentMovementId,
+      creditId: credit.creditId,
+      installmentId: installment?.installmentId || '',
+      creditUpdates,
+      installmentUpdates,
+      accountDeltas,
+      voidMovement,
+      voidReason: normalizedPayload.reason,
+      idempotencyKey,
+      idempotencyHash,
+      idempotencyScopeDate,
+      action: 'void_credit_payment'
+    });
+
+    await financeRepository.createActionLog({
+      action: 'void_credit_payment',
+      workspaceId: workspace.workspaceId,
+      userId,
+      status: 'success',
+      documentId: result.movementId,
+      creditId: credit.creditId,
+      idempotencyHash,
+      idempotencyScopeDate,
+      request: {
+        originalPayment: summarizeMovementForResponse(paymentMovement),
+        reason: normalizedPayload.reason,
+        idempotencyKey
+      }
+    });
+
+    const updatedCredit = await financeRepository.getCredit({
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      includeInstallments: true
+    });
+
+    return {
+      ok: true,
+      action: 'void_credit_payment',
+      workspaceId: workspace.workspaceId,
+      creditId: credit.creditId,
+      movementId: result.movementId,
+      documentId: result.movementId,
+      originalMovementId: normalizedPayload.paymentMovementId,
+      idempotencyKey,
+      credit: {
+        ...summarizeCreditForResponse(updatedCredit),
+        installments: updatedCredit.installments || []
+      },
+      voidMovement: summarizeMovementForResponse(voidMovement),
+      affectedAccounts: await Promise.all(
+        accountDeltas.map((delta) => financeRepository.getAccount({
+          workspaceId: workspace.workspaceId,
+          accountId: delta.accountId
+        }))
+      )
+    };
+  }
+
+  async upsertExpense({ userId, authContext, payload, metadata = {} }) {
     ensureScope(authContext, 'expenses:write');
-    const normalizedPayload = validateCreateExpensePayload(payload);
+    const normalizedPayload = validateUpsertExpensePayload(payload);
     const workspace = await this.resolveWorkspace({
       userId,
       workspaceId: normalizedPayload.workspaceId
@@ -1920,24 +2755,38 @@ class FinanceService {
       metadata
     };
 
+    const accountDeltas = [
+      {
+        accountId: account.accountId,
+        deltaMinor: -normalizedPayload.amountMinor
+      }
+    ];
+
+    if (normalizedPayload.movementId) {
+      return this.updateMovementAndLog({
+        userId,
+        workspaceId: workspace.workspaceId,
+        action: 'upsert_expense',
+        movementId: normalizedPayload.movementId,
+        expectedType: 'expense',
+        movement,
+        accountDeltas
+      });
+    }
+
     return this.createMovementAndLog({
       userId,
       workspaceId: workspace.workspaceId,
-      action: 'create_expense',
+      action: 'upsert_expense',
       movement,
-      accountDeltas: [
-        {
-          accountId: account.accountId,
-          deltaMinor: -normalizedPayload.amountMinor
-        }
-      ],
+      accountDeltas,
       idempotencyKey
     });
   }
 
-  async createIncome({ userId, authContext, payload, metadata = {} }) {
+  async upsertIncome({ userId, authContext, payload, metadata = {} }) {
     ensureScope(authContext, 'income:write');
-    const normalizedPayload = validateCreateIncomePayload(payload);
+    const normalizedPayload = validateUpsertIncomePayload(payload);
     const workspace = await this.resolveWorkspace({
       userId,
       workspaceId: normalizedPayload.workspaceId
@@ -1996,24 +2845,38 @@ class FinanceService {
       metadata
     };
 
+    const accountDeltas = [
+      {
+        accountId: account.accountId,
+        deltaMinor: normalizedPayload.amountMinor
+      }
+    ];
+
+    if (normalizedPayload.movementId) {
+      return this.updateMovementAndLog({
+        userId,
+        workspaceId: workspace.workspaceId,
+        action: 'upsert_income',
+        movementId: normalizedPayload.movementId,
+        expectedType: 'income',
+        movement,
+        accountDeltas
+      });
+    }
+
     return this.createMovementAndLog({
       userId,
       workspaceId: workspace.workspaceId,
-      action: 'create_income',
+      action: 'upsert_income',
       movement,
-      accountDeltas: [
-        {
-          accountId: account.accountId,
-          deltaMinor: normalizedPayload.amountMinor
-        }
-      ],
+      accountDeltas,
       idempotencyKey
     });
   }
 
-  async createTransfer({ userId, authContext, payload, metadata = {} }) {
+  async upsertTransfer({ userId, authContext, payload, metadata = {} }) {
     ensureScope(authContext, 'transfers:write');
-    const normalizedPayload = validateCreateTransferPayload(payload);
+    const normalizedPayload = validateUpsertTransferPayload(payload);
     const workspace = await this.resolveWorkspace({
       userId,
       workspaceId: normalizedPayload.workspaceId
@@ -2041,7 +2904,7 @@ class FinanceService {
       throw createAgentError({
         code: 'invalid_transfer_accounts',
         message: 'fromAccount and toAccount must be different accounts.',
-        agentAction: 'Ask the user for a different destination account, then retry create_transfer.',
+        agentAction: 'Ask the user for a different destination account, then retry upsert_transfer.',
         missingFields: ['toAccountId']
       });
     }
@@ -2091,21 +2954,35 @@ class FinanceService {
       metadata
     };
 
+    const accountDeltas = [
+      {
+        accountId: fromAccount.accountId,
+        deltaMinor: -normalizedPayload.amountMinor
+      },
+      {
+        accountId: toAccount.accountId,
+        deltaMinor: normalizedPayload.amountMinor
+      }
+    ];
+
+    if (normalizedPayload.movementId) {
+      return this.updateMovementAndLog({
+        userId,
+        workspaceId: workspace.workspaceId,
+        action: 'upsert_transfer',
+        movementId: normalizedPayload.movementId,
+        expectedType: 'transfer',
+        movement,
+        accountDeltas
+      });
+    }
+
     return this.createMovementAndLog({
       userId,
       workspaceId: workspace.workspaceId,
-      action: 'create_transfer',
+      action: 'upsert_transfer',
       movement,
-      accountDeltas: [
-        {
-          accountId: fromAccount.accountId,
-          deltaMinor: -normalizedPayload.amountMinor
-        },
-        {
-          accountId: toAccount.accountId,
-          deltaMinor: normalizedPayload.amountMinor
-        }
-      ],
+      accountDeltas,
       idempotencyKey
     });
   }
@@ -2266,6 +3143,133 @@ class FinanceService {
 
       throw error;
     }
+  }
+
+  getMovementAccountDeltas(movement) {
+    if (movement.type === 'expense') {
+      return [{
+        accountId: movement.accountId,
+        deltaMinor: -Number(movement.amountMinor || 0)
+      }];
+    }
+
+    if (movement.type === 'income') {
+      return [{
+        accountId: movement.accountId,
+        deltaMinor: Number(movement.amountMinor || 0)
+      }];
+    }
+
+    if (movement.type === 'transfer') {
+      return [
+        {
+          accountId: movement.fromAccountId,
+          deltaMinor: -Number(movement.amountMinor || 0)
+        },
+        {
+          accountId: movement.toAccountId,
+          deltaMinor: Number(movement.amountMinor || 0)
+        }
+      ];
+    }
+
+    throw createAgentError({
+      code: 'movement_update_not_supported',
+      message: `Movements of type ${movement.type} cannot be updated by this tool.`,
+      agentAction: 'Explain that this movement type has additional accounting effects. Use the matching domain tool or record an adjustment instead of editing it directly.',
+      details: {
+        movementId: movement.movementId || movement.id,
+        type: movement.type
+      }
+    });
+  }
+
+  async updateMovementAndLog({
+    userId,
+    workspaceId,
+    action,
+    movementId,
+    expectedType,
+    movement,
+    accountDeltas
+  }) {
+    const previousMovement = await financeRepository.getMovement({
+      workspaceId,
+      movementId
+    });
+
+    if (!previousMovement || previousMovement.active === false) {
+      throw createAgentError({
+        code: 'movement_not_found',
+        message: 'The movementId provided for update does not exist.',
+        agentAction: 'Call list_movements, ask the user which movement to update, then retry with the selected movementId.',
+        suggestedTool: 'list_movements',
+        details: {
+          workspaceId,
+          movementId
+        }
+      });
+    }
+
+    if (previousMovement.type !== expectedType) {
+      throw createAgentError({
+        code: 'movement_type_mismatch',
+        message: `Movement ${movementId} is type ${previousMovement.type}, not ${expectedType}.`,
+        agentAction: `Use the update tool for ${previousMovement.type}, or call list_movements and ask the user which movement they want to update.`,
+        suggestedTool: 'list_movements',
+        details: {
+          workspaceId,
+          movementId,
+          expectedType,
+          actualType: previousMovement.type
+        }
+      });
+    }
+
+    const previousAccountDeltas = this.getMovementAccountDeltas(previousMovement);
+    const result = await financeRepository.updateMovementWithAccountDeltas({
+      workspaceId,
+      userId,
+      movementId,
+      expectedType,
+      movement,
+      previousAccountDeltas,
+      nextAccountDeltas: accountDeltas
+    });
+    const affectedAccountIds = Array.from(new Set([
+      ...previousAccountDeltas.map((delta) => delta.accountId),
+      ...accountDeltas.map((delta) => delta.accountId)
+    ].filter(Boolean)));
+    const affectedAccounts = await Promise.all(
+      affectedAccountIds.map((accountId) => financeRepository.getAccount({
+        workspaceId,
+        accountId
+      }))
+    );
+
+    await financeRepository.createActionLog({
+      action,
+      workspaceId,
+      userId,
+      status: 'success',
+      documentId: result.documentId,
+      request: {
+        previousMovement: summarizeMovementForResponse(previousMovement),
+        nextMovement: summarizeMovementForResponse(movement)
+      }
+    });
+
+    return {
+      ok: true,
+      action,
+      workspaceId,
+      movementId: result.documentId,
+      documentId: result.documentId,
+      created: false,
+      movement: summarizeMovementForResponse(movement),
+      previousMovement: summarizeMovementForResponse(previousMovement),
+      affectedAccounts
+    };
   }
 
   async listMovements({ userId, authContext, payload = {} }) {
@@ -2448,6 +3452,9 @@ class FinanceService {
         creditDisbursementMinor: 0,
         creditPurchaseMinor: 0,
         creditPaymentMinor: 0,
+        creditDisbursementVoidMinor: 0,
+        creditPurchaseVoidMinor: 0,
+        creditPaymentVoidMinor: 0,
         creditPrincipalPaymentMinor: 0,
         creditInterestMinor: 0,
         creditFeeMinor: 0,
@@ -2497,6 +3504,31 @@ class FinanceService {
         current.netMinor -= interestMinor + feeMinor;
       }
 
+      if (movement.type === 'credit_disbursement_void') {
+        current.creditDisbursementVoidMinor += amountMinor;
+        current.creditDisbursementMinor -= amountMinor;
+      }
+
+      if (movement.type === 'credit_purchase_void') {
+        current.creditPurchaseVoidMinor += amountMinor;
+        current.creditPurchaseMinor -= amountMinor;
+        current.spendingMinor -= amountMinor;
+      }
+
+      if (movement.type === 'credit_payment_void') {
+        const principalMinor = Number(movement.principalAmountMinor || 0);
+        const interestMinor = Number(movement.interestAmountMinor || 0);
+        const feeMinor = Number(movement.feeAmountMinor || 0);
+
+        current.creditPaymentVoidMinor += amountMinor;
+        current.creditPaymentMinor -= amountMinor;
+        current.creditPrincipalPaymentMinor -= principalMinor;
+        current.creditInterestMinor -= interestMinor;
+        current.creditFeeMinor -= feeMinor;
+        current.spendingMinor -= interestMinor + feeMinor;
+        current.netMinor += interestMinor + feeMinor;
+      }
+
       summary[currency] = current;
       return summary;
     }, {});
@@ -2510,6 +3542,9 @@ class FinanceService {
       item.creditDisbursement = toAmount(item.creditDisbursementMinor);
       item.creditPurchase = toAmount(item.creditPurchaseMinor);
       item.creditPayment = toAmount(item.creditPaymentMinor);
+      item.creditDisbursementVoid = toAmount(item.creditDisbursementVoidMinor);
+      item.creditPurchaseVoid = toAmount(item.creditPurchaseVoidMinor);
+      item.creditPaymentVoid = toAmount(item.creditPaymentVoidMinor);
       item.creditPrincipalPayment = toAmount(item.creditPrincipalPaymentMinor);
       item.creditInterest = toAmount(item.creditInterestMinor);
       item.creditFee = toAmount(item.creditFeeMinor);

@@ -32,6 +32,7 @@ Este modelo permite que muchas personas usen el mismo MCP sin mezclar registros.
 users/{firebaseUid}
 financeWorkspaces/{workspaceId}
 financeWorkspaces/{workspaceId}/members/{firebaseUid}
+financeWorkspaces/{workspaceId}/financialGoals/{goalId}
 financeWorkspaces/{workspaceId}/categories/{categoryId}
 financeWorkspaces/{workspaceId}/accounts/{accountId}
 financeWorkspaces/{workspaceId}/accounts/{accountId}/paymentMethods/{paymentMethodId}
@@ -62,6 +63,8 @@ workspaces:read
 workspaces:write
 members:read
 members:write
+goals:read
+goals:write
 categories:read
 categories:write
 accounts:read
@@ -86,6 +89,7 @@ La etapa 1 permite:
 - Consultar movimientos por rango de tiempo.
 - Manejar workspaces.
 - Manejar miembros y permisos por workspace.
+- Manejar objetivos financieros como contexto del usuario.
 - Manejar categorias controladas por workspace.
 - Manejar cuentas.
 - Manejar metodos de pago dentro de cuentas.
@@ -104,10 +108,12 @@ business
 ## Tools MCP
 
 ```txt
-create_workspace
+upsert_workspace
 list_workspaces
-add_workspace_member
+upsert_workspace_member
 list_workspace_members
+list_financial_goals
+upsert_financial_goal
 list_categories
 upsert_category
 upsert_account
@@ -115,12 +121,16 @@ list_accounts
 upsert_payment_method
 list_payment_methods
 list_credits
+update_credit_metadata_only
 create_credit
 create_credit_purchase
 record_credit_payment
-create_expense
-create_income
-create_transfer
+void_credit
+void_credit_purchase
+void_credit_payment
+upsert_expense
+upsert_income
+upsert_transfer
 set_account_balance
 list_movements
 ```
@@ -157,7 +167,7 @@ grantedScopes
 Para agregar miembros:
 
 1. La persona debe haber conectado el MCP con Google al menos una vez para existir como `users/{firebaseUid}`.
-2. El owner o administrador llama `add_workspace_member`.
+2. El owner o administrador llama `upsert_workspace_member`.
 3. Se indica `memberEmail` o `memberUserId`.
 4. Se indica `role`: `viewer`, `member` o `admin`.
 5. La tool convierte ese rol a `grantedScopes`, actualiza `financeWorkspaces/{workspaceId}/members/{firebaseUid}` y agrega el workspace en `users/{firebaseUid}.profiles.finance.workspaceIds`.
@@ -251,11 +261,15 @@ installment_purchase
 
 Reglas para el agente:
 
-- `create_expense`: compras normales pagadas de inmediato, incluso si se pagaron con tarjeta de credito.
+- `upsert_expense`: compras normales pagadas de inmediato, incluso si se pagaron con tarjeta de credito.
 - `create_credit_purchase`: compras a meses, MSI, pagos, plazos o financiamiento.
 - `create_credit`: creditos/prestamos donde el usuario recibe dinero y queda una deuda.
+- `update_credit_metadata_only`: correcciones descriptivas de creditos o compras financiadas, sin modificar calendarios, saldos ni movimientos.
 - `record_credit_payment`: pagos de creditos o compras financiadas ya registradas.
-- `create_transfer`: pagos generales de tarjeta de credito que no corresponden a un credito/plan registrado.
+- `void_credit`: anulacion auditable de creditos/prestamos registrados por error, sin borrar documentos.
+- `void_credit_purchase`: anulacion auditable de compras financiadas registradas por error, sin borrar documentos.
+- `void_credit_payment`: anulacion auditable de pagos de credito registrados por error, sin borrar documentos.
+- `upsert_transfer`: pagos generales de tarjeta de credito que no corresponden a un credito/plan registrado.
 
 No se deben asumir meses, fechas, intereses, comisiones, cuenta de pago, comercio ni proveedor. Si hay intereses, el agente debe obtener monto total a pagar, interes total, mensualidad exacta, desglose del pago o saldo restante, segun corresponda.
 
@@ -277,6 +291,9 @@ balance_adjustment
 credit_disbursement
 credit_purchase
 credit_payment
+credit_disbursement_void
+credit_purchase_void
+credit_payment_void
 ```
 
 Cada movimiento guarda `amountMinor` para evitar errores decimales y `amount` para lectura. Tambien guarda `lines` con impactos por cuenta:

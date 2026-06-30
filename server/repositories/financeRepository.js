@@ -142,6 +142,33 @@ class FinanceRepository {
     };
   }
 
+  async updateWorkspace({ workspaceId, payload }) {
+    const workspaceRef = db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId);
+    const snapshot = await workspaceRef.get();
+
+    if (!snapshot.exists || snapshot.get('active') === false) {
+      throw new AppError({
+        statusCode: 404,
+        code: 'workspace_not_found',
+        message: 'Workspace does not exist or is inactive.'
+      });
+    }
+
+    await workspaceRef.set(cleanData({
+      name: payload.name,
+      normalizedName: payload.normalizedName,
+      type: payload.type,
+      currency: payload.currency,
+      description: payload.description,
+      active: payload.active,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }), { merge: true });
+
+    return {
+      workspaceId
+    };
+  }
+
   async getUserWorkspaceIds(userId) {
     const userSnapshot = await db.collection('users').doc(userId).get();
 
@@ -363,6 +390,116 @@ class FinanceRepository {
     return {
       memberUserId: targetUser.userId,
       created
+    };
+  }
+
+  async listFinancialGoals({
+    workspaceId,
+    type = '',
+    status = '',
+    includeInactive = false
+  }) {
+    const snapshot = await db
+      .collection(FINANCE_WORKSPACES_COLLECTION)
+      .doc(workspaceId)
+      .collection('financialGoals')
+      .orderBy('name')
+      .get();
+
+    return snapshot.docs
+      .map(mapDocument)
+      .filter((goal) => goal && (includeInactive || goal.active !== false))
+      .filter((goal) => !type || goal.type === type)
+      .filter((goal) => !status || goal.status === status)
+      .map((goal) => ({
+        ...goal,
+        goalId: goal.id
+      }));
+  }
+
+  async getFinancialGoal({ workspaceId, goalId }) {
+    const snapshot = await db
+      .collection(FINANCE_WORKSPACES_COLLECTION)
+      .doc(workspaceId)
+      .collection('financialGoals')
+      .doc(goalId)
+      .get();
+
+    const goal = mapDocument(snapshot);
+
+    return goal ? {
+      ...goal,
+      goalId: goal.id
+    } : null;
+  }
+
+  async findFinancialGoalsByNormalizedName({ workspaceId, normalizedName }) {
+    const snapshot = await db
+      .collection(FINANCE_WORKSPACES_COLLECTION)
+      .doc(workspaceId)
+      .collection('financialGoals')
+      .where('normalizedName', '==', normalizedName)
+      .limit(10)
+      .get();
+
+    return snapshot.docs
+      .map(mapDocument)
+      .filter((goal) => goal && goal.active !== false)
+      .map((goal) => ({
+        ...goal,
+        goalId: goal.id
+      }));
+  }
+
+  async upsertFinancialGoal({ workspaceId, userId, payload }) {
+    const goalsRef = db
+      .collection(FINANCE_WORKSPACES_COLLECTION)
+      .doc(workspaceId)
+      .collection('financialGoals');
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    let goalRef = payload.goalId ? goalsRef.doc(payload.goalId) : null;
+    let isNewGoal = !payload.goalId;
+
+    if (!goalRef) {
+      const existing = await goalsRef
+        .where('normalizedName', '==', payload.normalizedName)
+        .limit(10)
+        .get();
+      const activeExistingDoc = existing.docs.find((doc) => doc.get('active') !== false);
+
+      goalRef = activeExistingDoc ? activeExistingDoc.ref : goalsRef.doc();
+      isNewGoal = !activeExistingDoc;
+    }
+
+    await goalRef.set(cleanData({
+      name: payload.name,
+      normalizedName: payload.normalizedName,
+      type: payload.type || (isNewGoal ? 'other' : undefined),
+      status: payload.status || (isNewGoal ? 'active' : undefined),
+      priority: payload.priority || (isNewGoal ? 'medium' : undefined),
+      currency: payload.currency || (isNewGoal ? 'MXN' : undefined),
+      targetAmountMinor: payload.targetAmountMinor,
+      targetAmount: payload.targetAmount,
+      currentAmountMinor: payload.currentAmountMinor === undefined && isNewGoal ? 0 : payload.currentAmountMinor,
+      currentAmount: payload.currentAmount === undefined && isNewGoal ? 0 : payload.currentAmount,
+      monthlyContributionMinor: payload.monthlyContributionMinor,
+      monthlyContribution: payload.monthlyContribution,
+      targetDate: payload.targetDate,
+      targetAge: payload.targetAge,
+      description: payload.description,
+      motivation: payload.motivation,
+      notes: payload.notes,
+      tags: payload.tags,
+      active: payload.active === undefined && isNewGoal ? true : payload.active,
+      createdBy: isNewGoal ? userId : undefined,
+      updatedBy: userId,
+      createdAt: isNewGoal ? now : undefined,
+      updatedAt: now
+    }), { merge: true });
+
+    return {
+      goalId: goalRef.id,
+      created: isNewGoal
     };
   }
 
@@ -705,6 +842,37 @@ class FinanceRepository {
     };
   }
 
+  async updateCreditMetadataOnly({ workspaceId, creditId, payload }) {
+    const creditRef = db
+      .collection(FINANCE_WORKSPACES_COLLECTION)
+      .doc(workspaceId)
+      .collection('credits')
+      .doc(creditId);
+    const snapshot = await creditRef.get();
+
+    if (!snapshot.exists) {
+      throw new AppError({
+        statusCode: 404,
+        code: 'credit_not_found',
+        message: 'Credit does not exist.'
+      });
+    }
+
+    await creditRef.set(cleanData({
+      name: payload.name,
+      normalizedName: payload.normalizedName,
+      provider: payload.provider,
+      description: payload.description,
+      notes: payload.notes,
+      active: payload.active,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }), { merge: true });
+
+    return {
+      creditId
+    };
+  }
+
   async findCreditsByNormalizedName({ workspaceId, normalizedName }) {
     const snapshot = await db
       .collection(FINANCE_WORKSPACES_COLLECTION)
@@ -739,6 +907,205 @@ class FinanceRepository {
         ...installment,
         installmentId: installment.id
       }));
+  }
+
+  async listCreditMovementsByType({ workspaceId, creditId, type, limit = 500 }) {
+    const snapshot = await db
+      .collection(FINANCE_WORKSPACES_COLLECTION)
+      .doc(workspaceId)
+      .collection('movements')
+      .where('creditId', '==', creditId)
+      .where('type', '==', type)
+      .limit(limit)
+      .get();
+
+    return snapshot.docs
+      .map(mapDocument)
+      .filter((movement) => movement && movement.active !== false)
+      .map((movement) => ({
+        ...movement,
+        movementId: movement.id
+      }));
+  }
+
+  async voidCreditWithReversal({
+    workspaceId,
+    userId,
+    creditId,
+    expectedCreditType,
+    originalMovementIds,
+    installmentIds,
+    accountDeltas,
+    voidMovement,
+    voidReason,
+    deactivateAccountIds = [],
+    idempotencyKey,
+    idempotencyHash,
+    idempotencyScopeDate,
+    action
+  }) {
+    const workspaceRef = db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId);
+    const idempotencyRef = workspaceRef.collection('idempotencyKeys').doc(idempotencyHash);
+    const creditRef = workspaceRef.collection('credits').doc(creditId);
+    const voidMovementRef = workspaceRef.collection('movements').doc();
+    const originalMovementRefs = originalMovementIds.map((movementId) => workspaceRef.collection('movements').doc(movementId));
+    const accountRefs = accountDeltas.map((delta) => workspaceRef.collection('accounts').doc(delta.accountId));
+    const installmentRefs = installmentIds.map((installmentId) => creditRef.collection('installments').doc(installmentId));
+    const deactivateAccountRefs = deactivateAccountIds.map((accountId) => workspaceRef.collection('accounts').doc(accountId));
+
+    return db.runTransaction(async (transaction) => {
+      const idempotencySnapshot = await transaction.get(idempotencyRef);
+
+      if (idempotencySnapshot.exists) {
+        const idempotencyData = idempotencySnapshot.data();
+        throw new AppError({
+          statusCode: 409,
+          code: 'duplicate_action',
+          message: 'A credit void action with this idempotencyKey already exists.',
+          details: {
+            documentId: idempotencyData.documentId || null,
+            creditId: idempotencyData.creditId || null,
+            idempotencyScopeDate: idempotencyData.idempotencyScopeDate || ''
+          }
+        });
+      }
+
+      const creditSnapshot = await transaction.get(creditRef);
+
+      if (!creditSnapshot.exists) {
+        throw new AppError({
+          statusCode: 404,
+          code: 'credit_not_found',
+          message: 'Credit does not exist.'
+        });
+      }
+
+      if (creditSnapshot.get('type') !== expectedCreditType) {
+        throw new AppError({
+          statusCode: 400,
+          code: 'credit_type_mismatch',
+          message: 'Credit type does not match this void tool.'
+        });
+      }
+
+      if (creditSnapshot.get('status') === 'cancelled' || creditSnapshot.get('voided') === true) {
+        throw new AppError({
+          statusCode: 409,
+          code: 'credit_already_voided',
+          message: 'Credit is already cancelled or voided.'
+        });
+      }
+
+      const originalMovementSnapshots = [];
+
+      for (const movementRef of originalMovementRefs) {
+        originalMovementSnapshots.push(await transaction.get(movementRef));
+      }
+
+      if (originalMovementSnapshots.some((snapshot) => !snapshot.exists)) {
+        throw new AppError({
+          statusCode: 404,
+          code: 'movement_not_found',
+          message: 'Original credit movement does not exist.'
+        });
+      }
+
+      const accountSnapshots = [];
+
+      for (const accountRef of accountRefs) {
+        accountSnapshots.push(await transaction.get(accountRef));
+      }
+
+      const now = admin.firestore.FieldValue.serverTimestamp();
+
+      accountSnapshots.forEach((snapshot, index) => {
+        if (!snapshot.exists) {
+          throw new AppError({
+            statusCode: 404,
+            code: 'account_not_found',
+            message: 'One of the accounts for this credit void does not exist.'
+          });
+        }
+
+        const delta = accountDeltas[index];
+        const currentBalanceMinor = Number(snapshot.get('balanceMinor') || 0);
+        const nextBalanceMinor = currentBalanceMinor + delta.deltaMinor;
+
+        transaction.update(snapshot.ref, {
+          balanceMinor: nextBalanceMinor,
+          balance: Number((nextBalanceMinor / 100).toFixed(2)),
+          updatedAt: now
+        });
+      });
+
+      deactivateAccountRefs.forEach((accountRef) => {
+        transaction.set(accountRef, {
+          active: false,
+          updatedAt: now
+        }, { merge: true });
+      });
+
+      originalMovementSnapshots.forEach((snapshot) => {
+        transaction.set(snapshot.ref, {
+          voided: true,
+          voidedAt: now,
+          voidedBy: userId,
+          voidReason,
+          voidMovementId: voidMovementRef.id,
+          updatedAt: now
+        }, { merge: true });
+      });
+
+      installmentRefs.forEach((installmentRef) => {
+        transaction.set(installmentRef, {
+          status: 'voided',
+          voided: true,
+          voidedAt: now,
+          voidedBy: userId,
+          voidReason,
+          updatedAt: now
+        }, { merge: true });
+      });
+
+      transaction.set(creditRef, cleanData({
+        status: 'cancelled',
+        active: false,
+        outstandingPrincipalMinor: 0,
+        outstandingPrincipal: 0,
+        voided: true,
+        voidedAt: now,
+        voidedBy: userId,
+        voidReason,
+        voidMovementId: voidMovementRef.id,
+        updatedAt: now
+      }), { merge: true });
+
+      transaction.set(voidMovementRef, cleanData({
+        ...voidMovement,
+        creditId,
+        originalMovementIds,
+        idempotencyKey,
+        idempotencyHash,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now
+      }));
+
+      transaction.set(idempotencyRef, {
+        action,
+        documentId: voidMovementRef.id,
+        creditId,
+        idempotencyKey,
+        idempotencyScopeDate,
+        createdBy: userId,
+        createdAt: now
+      });
+
+      return {
+        creditId,
+        movementId: voidMovementRef.id
+      };
+    });
   }
 
   async createCreditWithIdempotency({
@@ -997,6 +1364,282 @@ class FinanceRepository {
       return {
         creditId,
         movementId: movementRef.id
+      };
+    });
+  }
+
+  async voidCreditPaymentWithReversal({
+    workspaceId,
+    userId,
+    paymentMovementId,
+    creditId,
+    installmentId,
+    creditUpdates,
+    installmentUpdates,
+    accountDeltas,
+    voidMovement,
+    voidReason,
+    idempotencyKey,
+    idempotencyHash,
+    idempotencyScopeDate,
+    action
+  }) {
+    const workspaceRef = db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId);
+    const idempotencyRef = workspaceRef.collection('idempotencyKeys').doc(idempotencyHash);
+    const creditRef = workspaceRef.collection('credits').doc(creditId);
+    const installmentRef = installmentId ? creditRef.collection('installments').doc(installmentId) : null;
+    const paymentMovementRef = workspaceRef.collection('movements').doc(paymentMovementId);
+    const voidMovementRef = workspaceRef.collection('movements').doc();
+    const accountRefs = accountDeltas.map((delta) => workspaceRef.collection('accounts').doc(delta.accountId));
+
+    return db.runTransaction(async (transaction) => {
+      const idempotencySnapshot = await transaction.get(idempotencyRef);
+
+      if (idempotencySnapshot.exists) {
+        const idempotencyData = idempotencySnapshot.data();
+        throw new AppError({
+          statusCode: 409,
+          code: 'duplicate_action',
+          message: 'A credit payment void action with this idempotencyKey already exists.',
+          details: {
+            documentId: idempotencyData.documentId || null,
+            creditId: idempotencyData.creditId || null,
+            idempotencyScopeDate: idempotencyData.idempotencyScopeDate || ''
+          }
+        });
+      }
+
+      const [paymentMovementSnapshot, creditSnapshot, installmentSnapshot] = await Promise.all([
+        transaction.get(paymentMovementRef),
+        transaction.get(creditRef),
+        installmentRef ? transaction.get(installmentRef) : Promise.resolve(null)
+      ]);
+
+      if (!paymentMovementSnapshot.exists || paymentMovementSnapshot.get('active') === false) {
+        throw new AppError({
+          statusCode: 404,
+          code: 'movement_not_found',
+          message: 'Credit payment movement does not exist or is inactive.'
+        });
+      }
+
+      if (paymentMovementSnapshot.get('type') !== 'credit_payment') {
+        throw new AppError({
+          statusCode: 400,
+          code: 'movement_type_mismatch',
+          message: 'The movement is not a credit_payment.'
+        });
+      }
+
+      if (paymentMovementSnapshot.get('voided') === true) {
+        throw new AppError({
+          statusCode: 409,
+          code: 'credit_payment_already_voided',
+          message: 'This credit payment has already been voided.'
+        });
+      }
+
+      if (!creditSnapshot.exists) {
+        throw new AppError({
+          statusCode: 404,
+          code: 'credit_not_found',
+          message: 'Credit does not exist.'
+        });
+      }
+
+      if (installmentRef && !installmentSnapshot.exists) {
+        throw new AppError({
+          statusCode: 404,
+          code: 'installment_not_found',
+          message: 'Credit installment does not exist.'
+        });
+      }
+
+      const accountSnapshots = [];
+
+      for (const accountRef of accountRefs) {
+        accountSnapshots.push(await transaction.get(accountRef));
+      }
+
+      const now = admin.firestore.FieldValue.serverTimestamp();
+
+      accountSnapshots.forEach((snapshot, index) => {
+        if (!snapshot.exists) {
+          throw new AppError({
+            statusCode: 404,
+            code: 'account_not_found',
+            message: 'One of the accounts for this credit payment void does not exist.'
+          });
+        }
+
+        const delta = accountDeltas[index];
+        const currentBalanceMinor = Number(snapshot.get('balanceMinor') || 0);
+        const nextBalanceMinor = currentBalanceMinor + delta.deltaMinor;
+
+        transaction.update(snapshot.ref, {
+          balanceMinor: nextBalanceMinor,
+          balance: Number((nextBalanceMinor / 100).toFixed(2)),
+          updatedAt: now
+        });
+      });
+
+      transaction.set(creditRef, cleanData({
+        ...creditUpdates,
+        updatedAt: now
+      }), { merge: true });
+
+      if (installmentRef) {
+        transaction.set(installmentRef, cleanData({
+          ...installmentUpdates,
+          updatedAt: now
+        }), { merge: true });
+      }
+
+      transaction.set(paymentMovementRef, {
+        voided: true,
+        voidedAt: now,
+        voidedBy: userId,
+        voidReason,
+        voidMovementId: voidMovementRef.id,
+        updatedAt: now
+      }, { merge: true });
+
+      transaction.set(voidMovementRef, cleanData({
+        ...voidMovement,
+        creditId,
+        originalMovementId: paymentMovementId,
+        idempotencyKey,
+        idempotencyHash,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now
+      }));
+
+      transaction.set(idempotencyRef, {
+        action,
+        documentId: voidMovementRef.id,
+        creditId,
+        installmentId: installmentId || '',
+        originalMovementId: paymentMovementId,
+        idempotencyKey,
+        idempotencyScopeDate,
+        createdBy: userId,
+        createdAt: now
+      });
+
+      return {
+        creditId,
+        movementId: voidMovementRef.id
+      };
+    });
+  }
+
+  async getMovement({ workspaceId, movementId }) {
+    const snapshot = await db
+      .collection(FINANCE_WORKSPACES_COLLECTION)
+      .doc(workspaceId)
+      .collection('movements')
+      .doc(movementId)
+      .get();
+    const movement = mapDocument(snapshot);
+
+    return movement ? {
+      ...movement,
+      movementId: movement.id
+    } : null;
+  }
+
+  async updateMovementWithAccountDeltas({
+    workspaceId,
+    userId,
+    movementId,
+    expectedType,
+    movement,
+    previousAccountDeltas,
+    nextAccountDeltas
+  }) {
+    const workspaceRef = db.collection(FINANCE_WORKSPACES_COLLECTION).doc(workspaceId);
+    const movementRef = workspaceRef.collection('movements').doc(movementId);
+    const combinedDeltas = new Map();
+
+    previousAccountDeltas.forEach((delta) => {
+      combinedDeltas.set(
+        delta.accountId,
+        (combinedDeltas.get(delta.accountId) || 0) - Number(delta.deltaMinor || 0)
+      );
+    });
+
+    nextAccountDeltas.forEach((delta) => {
+      combinedDeltas.set(
+        delta.accountId,
+        (combinedDeltas.get(delta.accountId) || 0) + Number(delta.deltaMinor || 0)
+      );
+    });
+
+    const accountRefs = Array.from(combinedDeltas.keys()).map((accountId) => workspaceRef.collection('accounts').doc(accountId));
+
+    return db.runTransaction(async (transaction) => {
+      const movementSnapshot = await transaction.get(movementRef);
+
+      if (!movementSnapshot.exists || movementSnapshot.get('active') === false) {
+        throw new AppError({
+          statusCode: 404,
+          code: 'movement_not_found',
+          message: 'Movement does not exist or is inactive.'
+        });
+      }
+
+      if (movementSnapshot.get('type') !== expectedType) {
+        throw new AppError({
+          statusCode: 400,
+          code: 'movement_type_mismatch',
+          message: 'Movement type does not match the update tool.'
+        });
+      }
+
+      const accountSnapshots = [];
+
+      for (const accountRef of accountRefs) {
+        accountSnapshots.push(await transaction.get(accountRef));
+      }
+
+      const now = admin.firestore.FieldValue.serverTimestamp();
+
+      accountSnapshots.forEach((snapshot) => {
+        if (!snapshot.exists) {
+          throw new AppError({
+            statusCode: 404,
+            code: 'account_not_found',
+            message: 'One of the accounts for this movement update does not exist.'
+          });
+        }
+
+        const deltaMinor = combinedDeltas.get(snapshot.id) || 0;
+
+        if (!deltaMinor) {
+          return;
+        }
+
+        const currentBalanceMinor = Number(snapshot.get('balanceMinor') || 0);
+        const nextBalanceMinor = currentBalanceMinor + deltaMinor;
+
+        transaction.update(snapshot.ref, {
+          balanceMinor: nextBalanceMinor,
+          balance: Number((nextBalanceMinor / 100).toFixed(2)),
+          updatedAt: now
+        });
+      });
+
+      transaction.set(movementRef, cleanData({
+        ...movement,
+        idempotencyHash: movementSnapshot.get('idempotencyHash') || movement.idempotencyHash,
+        updatedBy: userId,
+        updatedAt: now
+      }), { merge: true });
+
+      return {
+        documentId: movementId,
+        accountIds: accountRefs.map((ref) => ref.id)
       };
     });
   }
